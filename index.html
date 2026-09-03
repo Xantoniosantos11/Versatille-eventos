@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <meta name="description" content="Versatille Eventos">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg">
+  <title>Versatille Eventos</title>
+  <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+  <main id="app">
+    <section id="setupScreen" class="screen hidden">
+      <div class="card login-card">
+        <div class="brand">VERSATILLE <span>EVENTOS</span></div>
+        <p class="subtitle">Configuração inicial</p>
+        <p class="muted">Cole abaixo a Publishable key copiada do Supabase. Ela é uma chave pública.</p>
+        <form id="setupForm">
+          <label>Publishable key
+            <input id="publishableKey" type="text" autocomplete="off" required placeholder="sb_publish_...">
+          </label>
+          <button class="primary" type="submit">Salvar e conectar</button>
+          <p id="setupError" class="error"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="loginScreen" class="screen">
+      <div class="card login-card">
+        <div class="brand">VERSATILLE <span>EVENTOS</span></div>
+        <p class="subtitle">Gestão de vendas e estoque</p>
+
+        <form id="loginForm">
+          <label>E-mail
+            <input id="email" type="email" autocomplete="username" required placeholder="seu@email.com">
+          </label>
+          <label>Senha
+            <input id="password" type="password" autocomplete="current-password" required placeholder="••••••••">
+          </label>
+          <button class="primary" type="submit">Entrar</button>
+          <p id="loginError" class="error"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="dashboardScreen" class="screen hidden">
+      <header class="topbar">
+        <div>
+          <div class="brand small">VERSATILLE <span>EVENTOS</span></div>
+          <div id="userInfo" class="muted"></div>
+        </div>
+        <button id="logoutBtn" class="ghost">Sair</button>
+      </header>
+
+      <div class="content">
+        <div class="welcome card">
+          <div>
+            <div class="eyebrow">PAINEL</div>
+            <h1 id="panelTitle">Bem-vindo</h1>
+            <p id="panelSubtitle" class="muted">Carregando...</p>
+          </div>
+          <div id="roleBadge" class="badge">...</div>
+        </div>
+
+        <div id="admArea" class="hidden">
+          <h2>Administração</h2>
+          <div class="grid">
+            <button class="menu-card" data-section="events">🎪<strong>Eventos</strong><span>Criar e fechar eventos</span></button>
+            <button class="menu-card" data-section="products">🍹<strong>Produtos</strong><span>Produtos e preços</span></button>
+            <button class="menu-card" data-section="stock">📦<strong>Estoque</strong><span>Entradas e ajustes</span></button>
+            <button class="menu-card" data-section="users">👥<strong>Vendedores</strong><span>Acessos da equipe</span></button>
+            <button class="menu-card" data-section="reports">📊<strong>Relatórios</strong><span>Fechamento e vendas</span></button>
+          </div>
+        </div>
+
+        <div id="sellerArea" class="hidden">
+          <h2>Vendas</h2>
+          <div class="grid">
+            <button class="menu-card featured" data-section="sale">🛒<strong>Nova venda</strong><span>Registrar pedido</span></button>
+            <button class="menu-card" data-section="mySales">🧾<strong>Minhas vendas</strong><span>Consultar vendas</span></button>
+          </div>
+        </div>
+
+        <div id="statusBox" class="card status-box">
+          <span class="dot"></span>
+          <span id="statusText">Conectando ao Supabase...</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js?v=5"></script>
+</body>
+</html>
