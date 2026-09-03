@@ -461,8 +461,8 @@ async function openEventSellers(){
       <div>
         <button id="backSellers" class="ghost">← Voltar</button>
         <div class="eyebrow">ADMINISTRAÇÃO</div>
-        <h1>Vendedores</h1>
-        <p class="muted">Gerencie a equipe vinculada a cada evento.</p>
+        <h1>Acessos</h1>
+        <p class="muted">Crie e gerencie acessos de garçons e organizações por evento.</p>
       </div>
     </div>
 
@@ -473,10 +473,16 @@ async function openEventSellers(){
     </div>
 
     <div id="sellerAddArea" class="card hidden">
-      <h2>Novo vendedor para este evento</h2>
-      <p class="muted">O sistema cria o acesso automaticamente e já vincula o vendedor ao evento selecionado.</p>
+      <h2>Novo acesso para este evento</h2>
+      <p class="muted">Escolha se o acesso será de Garçom ou Organização.</p>
       <form id="sellerForm">
-        <label>Nome do vendedor
+        <label>Tipo de acesso
+          <select id="sellerAccessType" class="select" required>
+            <option value="VENDEDOR">🍹 Garçom</option>
+            <option value="ORGANIZACAO">👁️ Organização</option>
+          </select>
+        </label>
+        <label>Nome
           <input id="sellerFullName" required maxlength="100" placeholder="Ex.: João da Silva">
         </label>
         <label>Usuário de acesso
@@ -486,7 +492,7 @@ async function openEventSellers(){
           <input id="sellerPassword" type="password" required minlength="6" maxlength="72" autocomplete="new-password" placeholder="Mínimo de 6 caracteres">
         </label>
         <div class="form-actions">
-          <button type="submit" class="primary compact">Criar vendedor e acesso</button>
+          <button type="submit" class="primary compact">Criar acesso</button>
         </div>
         <p id="sellerFormError" class="error"></p>
       </form>
@@ -533,38 +539,59 @@ async function loadEventSellers(){
   const list=document.getElementById("sellersList");
   if(!eventId){list.innerHTML="";return;}
 
-  const {data,error}=await supabaseClient.from("event_sellers")
-    .select("id,user_id,active,created_at,profiles(full_name)")
-    .eq("event_id",eventId)
-    .order("created_at",{ascending:true});
+  const [{data:sellers,error:sellerError},{data:orgs,error:orgError}] = await Promise.all([
+    supabaseClient.from("event_sellers")
+      .select("id,user_id,active,created_at,profiles(full_name)")
+      .eq("event_id",eventId)
+      .order("created_at",{ascending:true}),
+    supabaseClient.from("event_access")
+      .select("id,user_id,active,created_at,profiles(full_name)")
+      .eq("event_id",eventId)
+      .order("created_at",{ascending:true})
+  ]);
 
-  if(error){
-    list.innerHTML=`<div class="card error">Não foi possível carregar a equipe: ${escapeHtml(error.message)}</div>`;
+  if(sellerError || orgError){
+    const message=sellerError?.message || orgError?.message || "Erro ao carregar acessos.";
+    list.innerHTML=`<div class="card error">Não foi possível carregar os acessos: ${escapeHtml(message)}</div>`;
     return;
   }
-  if(!data?.length){
-    list.innerHTML=`<div class="card empty">Nenhum vendedor vinculado a este evento.</div>`;
+
+  const rows=[
+    ...(sellers||[]).map(s=>({...s,accessType:"VENDEDOR"})),
+    ...(orgs||[]).map(s=>({...s,accessType:"ORGANIZACAO"}))
+  ].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+
+  if(!rows.length){
+    list.innerHTML=`<div class="card empty">Nenhum acesso vinculado a este evento.</div>`;
     return;
   }
 
-  list.innerHTML=data.map(s=>`
-    <article class="product-card card">
-      <div>
-        <div class="event-title">${escapeHtml(s.profiles?.full_name||"Vendedor")}</div>
-        <div class="muted">Vínculo ${s.active?"ativo":"inativo"}</div>
-      </div>
-      <div class="product-right">
-        <span class="status ${s.active?"aberto":"fechado"}">${s.active?"ATIVO":"INATIVO"}</span>
-        <button class="${s.active?"danger-btn":"ghost"} small-btn" data-toggle-seller="${s.id}" data-active="${s.active}">
-          ${s.active?"Desativar":"Ativar"}
-        </button>
-      </div>
-    </article>
-  `).join("");
+  list.innerHTML=rows.map(s=>{
+    const isOrg=s.accessType==="ORGANIZACAO";
+    return `
+      <article class="product-card card">
+        <div>
+          <div class="event-title">${isOrg?"👁️":"🍹"} ${escapeHtml(s.profiles?.full_name||"Usuário")}</div>
+          <div class="muted">${isOrg?"Organização":"Garçom"} • Vínculo ${s.active?"ativo":"inativo"}</div>
+        </div>
+        <div class="product-right">
+          <span class="status ${s.active?"aberto":"fechado"}">${s.active?"ATIVO":"INATIVO"}</span>
+          <button class="${s.active?"danger-btn":"ghost"} small-btn"
+            data-toggle-access="${s.id}"
+            data-access-type="${s.accessType}"
+            data-active="${s.active}">
+            ${s.active?"Desativar":"Ativar"}
+          </button>
+        </div>
+      </article>
+    `;
+  }).join("");
 
-  data.forEach(s=>{
-    const b=document.querySelector(`[data-toggle-seller="${s.id}"]`);
-    if(b) b.onclick=()=>toggleEventSeller(s.id,!s.active);
+  rows.forEach(s=>{
+    const b=document.querySelector(`[data-toggle-access="${s.id}"]`);
+    if(b){
+      b.onclick=()=>toggleEventAccess(s.id,!s.active,s.accessType);
+    }
   });
 }
 
@@ -576,10 +603,13 @@ async function addSellerToEvent(e){
   createdBox.classList.add("hidden");
 
   const eventId=document.getElementById("sellerEventSelect").value;
+  const accessType=document.getElementById("sellerAccessType").value;
   const fullName=document.getElementById("sellerFullName").value.trim();
   const username=document.getElementById("sellerUsername").value.trim().toLowerCase();
   const password=document.getElementById("sellerPassword").value;
+
   if(!eventId||!fullName||!username||!password){err.textContent="Preencha todos os campos.";return;}
+  if(!["VENDEDOR","ORGANIZACAO"].includes(accessType)){err.textContent="Escolha um tipo de acesso válido.";return;}
   if(!/^[a-z0-9._-]{3,40}$/.test(username)){err.textContent="Usuário inválido. Use 3 a 40 caracteres: letras, números, ponto, hífen ou sublinhado.";return;}
   if(password.length<6){err.textContent="A senha precisa ter pelo menos 6 caracteres.";return;}
 
@@ -590,43 +620,46 @@ async function addSellerToEvent(e){
     "create-event-seller",
     {
       body: {
-        event_id: eventId,
-        full_name: fullName,
+        event_id:eventId,
+        full_name:fullName,
         username,
-        password
+        password,
+        access_type:accessType
       }
     }
   );
 
   if(functionError){
-    let message = functionError.message || "Não foi possível criar o vendedor.";
+    let message=functionError.message||"Não foi possível criar o acesso.";
     try{
       if(functionError.context){
-        const body = await functionError.context.json();
-        if(body?.error) message = body.error;
+        const body=await functionError.context.json();
+        if(body?.error) message=body.error;
       }
     }catch{}
-    err.textContent = message;
+    err.textContent=message;
     return;
   }
 
-  if(!result || result.error){
-    err.textContent = result?.error || "Não foi possível criar o vendedor.";
+  if(!result||result.error){
+    err.textContent=result?.error||"Não foi possível criar o acesso.";
     return;
   }
-
 
   document.getElementById("sellerForm").reset();
-  createdBox.innerHTML=`<strong>Vendedor criado com sucesso.</strong><br>Usuário: <b>${escapeHtml(result.username)}</b><br><span class="muted">Guarde a senha informada por você. Ela não será exibida novamente.</span>`;
+  const label=accessType==="ORGANIZACAO"?"Organização":"Garçom";
+  createdBox.innerHTML=`<strong>${label} criado com sucesso.</strong><br>Usuário: <b>${escapeHtml(result.username)}</b><br><span class="muted">Guarde a senha informada por você. Ela não será exibida novamente.</span>`;
   createdBox.classList.remove("hidden");
   await loadEventSellers();
 }
 
-async function toggleEventSeller(id,active){
-  const {error}=await supabaseClient.from("event_sellers").update({active}).eq("id",id);
-  if(error){alert("Não foi possível alterar o acesso ao evento: "+error.message);return}
+async function toggleEventAccess(id,active,type){
+  const table=type==="ORGANIZACAO"?"event_access":"event_sellers";
+  const {error}=await supabaseClient.from(table).update({active}).eq("id",id);
+  if(error){alert("Não foi possível alterar o acesso: "+error.message);return}
   await loadEventSellers();
 }
+
 
 
 /* =========================================================
