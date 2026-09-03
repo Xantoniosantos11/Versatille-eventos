@@ -1218,7 +1218,7 @@ async function openMySales(){
         <button id="backMySales" class="ghost">← Voltar</button>
         <div class="eyebrow">VENDAS</div>
         <h1>Minhas vendas</h1>
-        <p class="muted">Vendas registradas pelo seu usuário.</p>
+        <p class="muted">Consulta somente leitura das vendas registradas pelo seu usuário. Nenhuma alteração ou cancelamento é permitido.</p>
       </div>
     </div>
     <div id="mySalesList" class="list">
