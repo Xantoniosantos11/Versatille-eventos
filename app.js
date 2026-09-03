@@ -131,6 +131,8 @@ document.querySelectorAll("[data-section]").forEach(btn=>{
       await openEvents();
     } else if(section === "products"){
       await openProducts();
+    } else if(section === "users"){
+      await openEventSellers();
     } else {
       alert(`Módulo "${section}" será construído na próxima etapa.`);
     }
@@ -197,6 +199,7 @@ function rebindDashboardButtons(){
       const section = btn.dataset.section;
       if(section === "events") await openEvents();
       else if(section === "products") await openProducts();
+      else if(section === "users") await openEventSellers();
       else alert(`Módulo "${section}" será construído na próxima etapa.`);
     });
   });
@@ -437,5 +440,157 @@ function formatMoney(value){
   return Number(value||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 }
 
+
+
+async function openEventSellers(){
+  const content=document.querySelector(".content");
+  const oldHtml=content.innerHTML;
+
+  content.innerHTML=`
+    <div class="module-head">
+      <div>
+        <button id="backSellers" class="ghost">← Voltar</button>
+        <div class="eyebrow">ADMINISTRAÇÃO</div>
+        <h1>Vendedores</h1>
+        <p class="muted">Gerencie a equipe vinculada a cada evento.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Evento
+        <select id="sellerEventSelect" class="select"></select>
+      </label>
+    </div>
+
+    <div id="sellerAddArea" class="card hidden">
+      <h2>Vincular vendedor</h2>
+      <form id="sellerForm">
+        <label>Usuário já cadastrado no sistema
+          <select id="sellerUserSelect" class="select" required></select>
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="primary compact">Adicionar ao evento</button>
+        </div>
+        <p id="sellerFormError" class="error"></p>
+      </form>
+    </div>
+
+    <div id="sellersList" class="list"></div>
+  `;
+
+  document.getElementById("backSellers").onclick=()=>{
+    content.innerHTML=oldHtml;
+    rebindDashboardButtons();
+  };
+  document.getElementById("sellerEventSelect").onchange=loadEventSellers;
+  document.getElementById("sellerForm").onsubmit=addSellerToEvent;
+
+  await loadSellerEvents();
+}
+
+async function loadSellerEvents(){
+  const select=document.getElementById("sellerEventSelect");
+  const {data,error}=await supabaseClient.from("events")
+    .select("id,name,event_date,status")
+    .order("event_date",{ascending:false});
+
+  if(error){
+    select.innerHTML=`<option>Erro ao carregar eventos</option>`;
+    return;
+  }
+  if(!data?.length){
+    select.innerHTML=`<option value="">Nenhum evento cadastrado</option>`;
+    document.getElementById("sellerAddArea").classList.add("hidden");
+    document.getElementById("sellersList").innerHTML=`<div class="card empty">Crie um evento primeiro.</div>`;
+    return;
+  }
+
+  select.innerHTML=data.map(e=>`<option value="${e.id}">${escapeHtml(e.name)} • ${formatDate(e.event_date)} • ${escapeHtml(e.status)}</option>`).join("");
+  document.getElementById("sellerAddArea").classList.remove("hidden");
+  await loadSellerUsers();
+  await loadEventSellers();
+}
+
+async function loadSellerUsers(){
+  const select=document.getElementById("sellerUserSelect");
+  const {data,error}=await supabaseClient.from("profiles")
+    .select("id,full_name,role,active")
+    .eq("role","VENDEDOR")
+    .eq("active",true)
+    .order("full_name",{ascending:true});
+
+  if(error){
+    select.innerHTML=`<option value="">Não foi possível carregar vendedores</option>`;
+    return;
+  }
+  select.innerHTML=data?.length
+    ? data.map(u=>`<option value="${u.id}">${escapeHtml(u.full_name||"Vendedor")} </option>`).join("")
+    : `<option value="">Nenhum vendedor cadastrado ainda</option>`;
+}
+
+async function loadEventSellers(){
+  const eventId=document.getElementById("sellerEventSelect").value;
+  const list=document.getElementById("sellersList");
+  if(!eventId){list.innerHTML="";return;}
+
+  const {data,error}=await supabaseClient.from("event_sellers")
+    .select("id,user_id,active,created_at,profiles(full_name)")
+    .eq("event_id",eventId)
+    .order("created_at",{ascending:true});
+
+  if(error){
+    list.innerHTML=`<div class="card error">Não foi possível carregar a equipe: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  if(!data?.length){
+    list.innerHTML=`<div class="card empty">Nenhum vendedor vinculado a este evento.</div>`;
+    return;
+  }
+
+  list.innerHTML=data.map(s=>`
+    <article class="product-card card">
+      <div>
+        <div class="event-title">${escapeHtml(s.profiles?.full_name||"Vendedor")}</div>
+        <div class="muted">Vínculo ${s.active?"ativo":"inativo"}</div>
+      </div>
+      <div class="product-right">
+        <span class="status ${s.active?"aberto":"fechado"}">${s.active?"ATIVO":"INATIVO"}</span>
+        <button class="${s.active?"danger-btn":"ghost"} small-btn" data-toggle-seller="${s.id}" data-active="${s.active}">
+          ${s.active?"Desativar":"Ativar"}
+        </button>
+      </div>
+    </article>
+  `).join("");
+
+  data.forEach(s=>{
+    const b=document.querySelector(`[data-toggle-seller="${s.id}"]`);
+    if(b) b.onclick=()=>toggleEventSeller(s.id,!s.active);
+  });
+}
+
+async function addSellerToEvent(e){
+  e.preventDefault();
+  const err=document.getElementById("sellerFormError");
+  err.textContent="";
+  const eventId=document.getElementById("sellerEventSelect").value;
+  const userId=document.getElementById("sellerUserSelect").value;
+  if(!eventId||!userId){err.textContent="Selecione o evento e o vendedor.";return;}
+
+  const {error}=await supabaseClient.from("event_sellers").insert({
+    event_id:eventId,user_id:userId,active:true
+  });
+
+  if(error){
+    err.textContent=error.code==="23505"?"Esse vendedor já está vinculado a este evento.":error.message;
+    return;
+  }
+  await loadEventSellers();
+}
+
+async function toggleEventSeller(id,active){
+  const {error}=await supabaseClient.from("event_sellers").update({active}).eq("id",id);
+  if(error){alert("Não foi possível alterar o acesso ao evento: "+error.message);return}
+  await loadEventSellers();
+}
 
 init();

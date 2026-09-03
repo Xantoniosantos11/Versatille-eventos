@@ -66,3 +66,5 @@ h2{margin:28px 0 14px;font-size:20px}
   .product-card{align-items:flex-start;flex-direction:column}
   .product-right{width:100%;justify-content:space-between}
 }
+
+.select{width:100%;margin-top:8px;padding:14px 15px;border-radius:13px;border:1px solid var(--line);background:#0e0e11;color:white;outline:none}
