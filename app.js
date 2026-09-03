@@ -134,6 +134,8 @@ document.querySelectorAll("[data-section]").forEach(btn=>{
       await openProducts();
     } else if(section === "users"){
       await openEventSellers();
+    } else if(section === "stock"){
+      await openStock();
     } else if(section === "sale"){
       await openNewSale();
     } else if(section === "mySales"){
@@ -205,6 +207,7 @@ function rebindDashboardButtons(){
       if(section === "events") await openEvents();
       else if(section === "products") await openProducts();
       else if(section === "users") await openEventSellers();
+      else if(section === "stock") await openStock();
       else if(section === "sale") await openNewSale();
       else if(section === "mySales") await openMySales();
       else alert(`Módulo "${section}" será construído na próxima etapa.`);
@@ -623,6 +626,276 @@ async function toggleEventSeller(id,active){
   const {error}=await supabaseClient.from("event_sellers").update({active}).eq("id",id);
   if(error){alert("Não foi possível alterar o acesso ao evento: "+error.message);return}
   await loadEventSellers();
+}
+
+
+/* =========================================================
+   MÓDULO DE ESTOQUE
+   ========================================================= */
+
+async function openStock(){
+  const content=document.querySelector(".content");
+  const oldHtml=content.innerHTML;
+
+  content.innerHTML=`
+    <div class="module-head">
+      <div>
+        <button id="backStock" class="ghost">← Voltar</button>
+        <div class="eyebrow">ADMINISTRAÇÃO</div>
+        <h1>Estoque</h1>
+        <p class="muted">Controle o estoque de cada produto por evento.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Evento
+        <select id="stockEventSelect" class="select"></select>
+      </label>
+      <div id="stockEventStatus" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div id="stockMoveArea" class="card hidden">
+      <h2>Registrar movimentação</h2>
+      <p class="muted">Use ENTRADA para colocar mercadoria no evento. PERDA, QUEBRA e CONSUMO INTERNO retiram do estoque.</p>
+      <form id="stockForm">
+        <label>Produto
+          <select id="stockProductSelect" class="select" required></select>
+        </label>
+        <label>Tipo de movimentação
+          <select id="stockMovementType" class="select" required>
+            <option value="ENTRADA">Entrada</option>
+            <option value="PERDA">Perda</option>
+            <option value="QUEBRA">Quebra</option>
+            <option value="CONSUMO_INTERNO">Consumo interno</option>
+            <option value="AJUSTE">Ajuste</option>
+          </select>
+        </label>
+        <label>Quantidade
+          <input id="stockQuantity" type="number" min="1" step="1" value="1" inputmode="numeric" required>
+        </label>
+        <div id="stockAdjustmentDirectionWrap" class="hidden">
+          <label>Direção do ajuste
+            <select id="stockAdjustmentDirection" class="select">
+              <option value="1">Adicionar ao estoque</option>
+              <option value="-1">Retirar do estoque</option>
+            </select>
+          </label>
+        </div>
+        <label>Motivo / observação
+          <input id="stockReason" maxlength="200" placeholder="Ex.: Entrada de mercadoria do fornecedor">
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="primary compact">Registrar movimentação</button>
+        </div>
+        <p id="stockFormError" class="error"></p>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Estoque atual</h2>
+      <div id="stockList" class="list"><div class="muted">Carregando...</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Últimas movimentações</h2>
+      <div id="stockHistory" class="list"><div class="muted">Carregando...</div></div>
+    </div>
+  `;
+
+  document.getElementById("backStock").onclick=()=>{
+    content.innerHTML=oldHtml;
+    rebindDashboardButtons();
+  };
+  document.getElementById("stockEventSelect").onchange=loadStockForSelectedEvent;
+  document.getElementById("stockForm").onsubmit=registerStockMovement;
+  document.getElementById("stockMovementType").onchange=()=>{
+    document.getElementById("stockAdjustmentDirectionWrap").classList.toggle(
+      "hidden", document.getElementById("stockMovementType").value !== "AJUSTE"
+    );
+  };
+
+  await loadStockEvents();
+}
+
+async function loadStockEvents(){
+  const select=document.getElementById("stockEventSelect");
+  const {data,error}=await supabaseClient.from("events")
+    .select("id,name,event_date,status")
+    .order("event_date",{ascending:false});
+
+  if(error){
+    select.innerHTML=`<option value="">Erro ao carregar eventos</option>`;
+    document.getElementById("stockList").innerHTML=`<div class="card error">${escapeHtml(error.message)}</div>`;
+    return;
+  }
+
+  if(!data?.length){
+    select.innerHTML=`<option value="">Nenhum evento cadastrado</option>`;
+    document.getElementById("stockMoveArea").classList.add("hidden");
+    document.getElementById("stockList").innerHTML=`<div class="empty muted">Crie um evento primeiro.</div>`;
+    document.getElementById("stockHistory").innerHTML=`<div class="empty muted">Nenhuma movimentação.</div>`;
+    return;
+  }
+
+  select.innerHTML=data.map(e=>
+    `<option value="${e.id}">${escapeHtml(e.name)} • ${formatDate(e.event_date)} • ${escapeHtml(e.status)}</option>`
+  ).join("");
+  await loadStockForSelectedEvent();
+}
+
+async function loadStockForSelectedEvent(){
+  const eventId=document.getElementById("stockEventSelect")?.value;
+  if(!eventId) return;
+
+  const eventText=document.getElementById("stockEventSelect").selectedOptions[0]?.textContent || "";
+  const eventStatus=eventText.split("•").pop()?.trim() || "";
+  document.getElementById("stockEventStatus").textContent =
+    eventStatus === "ABERTO" ? "Evento aberto para movimentações." : "Evento fechado/cancelado: movimentações estão bloqueadas.";
+
+  document.getElementById("stockMoveArea").classList.toggle("hidden", eventStatus !== "ABERTO");
+
+  await Promise.all([loadStockProducts(eventId), loadStockList(eventId), loadStockHistory(eventId)]);
+}
+
+async function loadStockProducts(eventId){
+  const select=document.getElementById("stockProductSelect");
+  const {data,error}=await supabaseClient.from("products")
+    .select("id,name,category,price,active")
+    .eq("active",true)
+    .order("name",{ascending:true});
+
+  if(error){
+    select.innerHTML=`<option value="">Erro ao carregar produtos</option>`;
+    return;
+  }
+
+  if(!data?.length){
+    select.innerHTML=`<option value="">Nenhum produto ativo cadastrado</option>`;
+    return;
+  }
+
+  select.innerHTML=`<option value="">Selecione um produto</option>`+
+    data.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}${p.category?" • "+escapeHtml(p.category):""}</option>`).join("");
+}
+
+async function loadStockList(eventId){
+  const list=document.getElementById("stockList");
+  list.innerHTML=`<div class="muted">Carregando estoque...</div>`;
+
+  const [{data:products,error:productsError},{data:stocks,error:stocksError}]=await Promise.all([
+    supabaseClient.from("products").select("id,name,category,active").order("name",{ascending:true}),
+    supabaseClient.from("event_stock").select("product_id,quantity").eq("event_id",eventId)
+  ]);
+
+  if(productsError || stocksError){
+    list.innerHTML=`<div class="error">Não foi possível carregar o estoque: ${escapeHtml((productsError||stocksError).message)}</div>`;
+    return;
+  }
+
+  const stockMap=new Map((stocks||[]).map(s=>[s.product_id,Number(s.quantity||0)]));
+  const activeProducts=(products||[]).filter(p=>p.active);
+
+  if(!activeProducts.length){
+    list.innerHTML=`<div class="empty muted">Nenhum produto ativo cadastrado.</div>`;
+    return;
+  }
+
+  list.innerHTML=activeProducts.map(p=>{
+    const qty=stockMap.has(p.id)?stockMap.get(p.id):0;
+    return `<article class="product-card card">
+      <div>
+        <div class="event-title">${escapeHtml(p.name)}</div>
+        <div class="muted">${p.category?escapeHtml(p.category):"Produto"}</div>
+      </div>
+      <div class="product-right">
+        <strong style="font-size:24px">${qty}</strong>
+        <span class="muted">un.</span>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+async function loadStockHistory(eventId){
+  const list=document.getElementById("stockHistory");
+  list.innerHTML=`<div class="muted">Carregando histórico...</div>`;
+
+  const {data,error}=await supabaseClient.from("stock_movements")
+    .select("id,product_id,movement_type,quantity,reason,created_at,products(name)")
+    .eq("event_id",eventId)
+    .order("created_at",{ascending:false})
+    .limit(50);
+
+  if(error){
+    list.innerHTML=`<div class="error">Não foi possível carregar o histórico: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  if(!data?.length){
+    list.innerHTML=`<div class="empty muted">Nenhuma movimentação registrada neste evento.</div>`;
+    return;
+  }
+
+  list.innerHTML=data.map(m=>{
+    const typeLabel={
+      ENTRADA:"Entrada",PERDA:"Perda",QUEBRA:"Quebra",CONSUMO_INTERNO:"Consumo interno",AJUSTE:"Ajuste",VENDA:"Venda"
+    }[m.movement_type] || m.movement_type;
+    const sign=(m.movement_type==="ENTRADA" || m.movement_type==="AJUSTE")?"":"−";
+    return `<article class="card">
+      <div style="display:flex;justify-content:space-between;gap:12px">
+        <div>
+          <div class="event-title">${escapeHtml(m.products?.name || "Produto")}</div>
+          <div class="muted">${escapeHtml(typeLabel)}${m.reason?" • "+escapeHtml(m.reason):""}</div>
+        </div>
+        <strong>${sign}${Math.abs(Number(m.quantity||0))}</strong>
+      </div>
+      <div class="muted" style="margin-top:8px">${new Date(m.created_at).toLocaleString("pt-BR")}</div>
+    </article>`;
+  }).join("");
+}
+
+async function registerStockMovement(e){
+  e.preventDefault();
+  const err=document.getElementById("stockFormError");
+  err.textContent="";
+
+  const eventId=document.getElementById("stockEventSelect").value;
+  const productId=document.getElementById("stockProductSelect").value;
+  const movementType=document.getElementById("stockMovementType").value;
+  const quantity=Number(document.getElementById("stockQuantity").value);
+  const reason=document.getElementById("stockReason").value.trim() || null;
+
+  if(!eventId || !productId){err.textContent="Selecione evento e produto.";return;}
+  if(!Number.isInteger(quantity) || quantity<1){err.textContent="Informe uma quantidade inteira maior que zero.";return;}
+
+  let delta=quantity;
+  if(["PERDA","QUEBRA","CONSUMO_INTERNO"].includes(movementType)) delta=-quantity;
+  if(movementType==="AJUSTE") delta=quantity*Number(document.getElementById("stockAdjustmentDirection").value);
+
+  const button=document.querySelector("#stockForm button[type=submit]");
+  button.disabled=true;
+  button.textContent="Registrando...";
+
+  const {data,error}=await supabaseClient.rpc("adjust_event_stock",{
+    p_event_id:eventId,
+    p_product_id:productId,
+    p_delta:delta,
+    p_movement_type:movementType,
+    p_reason:reason
+  });
+
+  button.disabled=false;
+  button.textContent="Registrar movimentação";
+
+  if(error){
+    err.textContent=error.message || "Não foi possível registrar a movimentação.";
+    return;
+  }
+
+  document.getElementById("stockForm").reset();
+  document.getElementById("stockQuantity").value="1";
+  document.getElementById("stockAdjustmentDirection").value="1";
+  document.getElementById("stockAdjustmentDirectionWrap").classList.add("hidden");
+  alert(`Movimentação registrada. Estoque atual: ${Number(data)} unidade(s).`);
+  await Promise.all([loadStockList(eventId),loadStockHistory(eventId)]);
 }
 
 /* =========================================================
