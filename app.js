@@ -129,6 +129,8 @@ document.querySelectorAll("[data-section]").forEach(btn=>{
     const section = btn.dataset.section;
     if(section === "events"){
       await openEvents();
+    } else if(section === "products"){
+      await openProducts();
     } else {
       alert(`Módulo "${section}" será construído na próxima etapa.`);
     }
@@ -194,6 +196,7 @@ function rebindDashboardButtons(){
     btn.addEventListener("click", async ()=>{
       const section = btn.dataset.section;
       if(section === "events") await openEvents();
+      else if(section === "products") await openProducts();
       else alert(`Módulo "${section}" será construído na próxima etapa.`);
     });
   });
@@ -291,5 +294,148 @@ function escapeHtml(value){
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
   }[c]));
 }
+
+
+async function openProducts(){
+  const content=document.querySelector(".content");
+  const oldHtml=content.innerHTML;
+
+  content.innerHTML=`
+    <div class="module-head">
+      <div>
+        <button id="backProducts" class="ghost">← Voltar</button>
+        <div class="eyebrow">ADMINISTRAÇÃO</div>
+        <h1>Produtos</h1>
+        <p class="muted">Cadastre bebidas, preços e disponibilidade para as vendas.</p>
+      </div>
+      <button id="newProductBtn" class="primary compact">+ Novo produto</button>
+    </div>
+
+    <div id="productFormWrap" class="card hidden">
+      <h2 id="productFormTitle">Novo produto</h2>
+      <form id="productForm">
+        <input id="productId" type="hidden">
+        <label>Nome do produto
+          <input id="productName" required maxlength="120" placeholder="Ex.: Red Bull 250ml">
+        </label>
+        <label>Categoria
+          <input id="productCategory" maxlength="80" placeholder="Ex.: Energético">
+        </label>
+        <label>Preço de venda
+          <input id="productPrice" type="number" min="0" step="0.01" required placeholder="0,00">
+        </label>
+        <div class="form-actions">
+          <button type="button" id="cancelProductForm" class="ghost">Cancelar</button>
+          <button type="submit" class="primary compact">Salvar produto</button>
+        </div>
+        <p id="productFormError" class="error"></p>
+      </form>
+    </div>
+
+    <div id="productsList" class="list"></div>
+  `;
+
+  document.getElementById("backProducts").onclick=()=>{content.innerHTML=oldHtml;rebindDashboardButtons()};
+  document.getElementById("newProductBtn").onclick=()=>openProductForm();
+  document.getElementById("cancelProductForm").onclick=()=>document.getElementById("productFormWrap").classList.add("hidden");
+  document.getElementById("productForm").onsubmit=saveProduct;
+  await loadProducts();
+}
+
+function openProductForm(product=null){
+  const wrap=document.getElementById("productFormWrap");
+  wrap.classList.remove("hidden");
+  document.getElementById("productFormTitle").textContent=product?"Editar produto":"Novo produto";
+  document.getElementById("productId").value=product?.id||"";
+  document.getElementById("productName").value=product?.name||"";
+  document.getElementById("productCategory").value=product?.category||"";
+  document.getElementById("productPrice").value=product?.price??"";
+  document.getElementById("productFormError").textContent="";
+  document.getElementById("productName").focus();
+}
+
+async function loadProducts(){
+  const list=document.getElementById("productsList");
+  list.innerHTML=`<div class="card muted">Carregando produtos...</div>`;
+
+  const {data,error}=await supabaseClient
+    .from("products")
+    .select("id,name,category,price,active,created_at,updated_at")
+    .order("active",{ascending:false})
+    .order("name",{ascending:true});
+
+  if(error){
+    list.innerHTML=`<div class="card error">Não foi possível carregar os produtos: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  if(!data?.length){
+    list.innerHTML=`<div class="card empty">Nenhum produto cadastrado. Toque em <b>+ Novo produto</b>.</div>`;
+    return;
+  }
+
+  list.innerHTML=data.map(p=>`
+    <article class="product-card card">
+      <div>
+        <div class="event-title">${escapeHtml(p.name)}</div>
+        <div class="muted">${p.category?escapeHtml(p.category)+" • ":""}${formatMoney(p.price)}</div>
+      </div>
+      <div class="product-right">
+        <span class="status ${p.active?"aberto":"fechado"}">${p.active?"ATIVO":"INATIVO"}</span>
+        <div class="event-actions">
+          <button class="ghost small-btn" data-edit-product="${p.id}">Editar</button>
+          <button class="${p.active?"danger-btn":"ghost"} small-btn" data-toggle-product="${p.id}" data-active="${p.active}">
+            ${p.active?"Desativar":"Ativar"}
+          </button>
+        </div>
+      </div>
+    </article>
+  `).join("");
+
+  data.forEach(p=>{
+    const edit=document.querySelector(`[data-edit-product="${p.id}"]`);
+    const toggle=document.querySelector(`[data-toggle-product="${p.id}"]`);
+    if(edit) edit.onclick=()=>openProductForm(p);
+    if(toggle) toggle.onclick=()=>toggleProduct(p.id,!p.active);
+  });
+}
+
+async function saveProduct(e){
+  e.preventDefault();
+  const err=document.getElementById("productFormError");
+  err.textContent="";
+
+  const id=document.getElementById("productId").value;
+  const payload={
+    name:document.getElementById("productName").value.trim(),
+    category:document.getElementById("productCategory").value.trim()||null,
+    price:Number(document.getElementById("productPrice").value)
+  };
+
+  if(!payload.name || !Number.isFinite(payload.price) || payload.price<0){
+    err.textContent="Informe nome e preço válidos.";
+    return;
+  }
+
+  const result=id
+    ? await supabaseClient.from("products").update(payload).eq("id",id)
+    : await supabaseClient.from("products").insert({...payload,active:true});
+
+  if(result.error){err.textContent=result.error.message;return}
+
+  document.getElementById("productForm").reset();
+  document.getElementById("productFormWrap").classList.add("hidden");
+  await loadProducts();
+}
+
+async function toggleProduct(id,active){
+  const {error}=await supabaseClient.from("products").update({active}).eq("id",id);
+  if(error){alert("Não foi possível alterar o produto: "+error.message);return}
+  await loadProducts();
+}
+
+function formatMoney(value){
+  return Number(value||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+}
+
 
 init();
