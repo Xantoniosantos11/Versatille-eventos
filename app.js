@@ -112,8 +112,9 @@ loginForm.addEventListener("submit", async (e)=>{
     return;
   }
 
-  const email = document.getElementById("email").value.trim();
+  const login = document.getElementById("email").value.trim().toLowerCase();
   const password = document.getElementById("password").value;
+  const email = login.includes("@") ? login : `${login}@login.versatille-eventos.local`;
 
   const {error} = await supabaseClient.auth.signInWithPassword({email,password});
   if(error) loginError.textContent = "E-mail ou senha inválidos.";
@@ -463,16 +464,24 @@ async function openEventSellers(){
     </div>
 
     <div id="sellerAddArea" class="card hidden">
-      <h2>Vincular vendedor</h2>
+      <h2>Novo vendedor para este evento</h2>
+      <p class="muted">O sistema cria o acesso automaticamente e já vincula o vendedor ao evento selecionado.</p>
       <form id="sellerForm">
-        <label>Usuário já cadastrado no sistema
-          <select id="sellerUserSelect" class="select" required></select>
+        <label>Nome do vendedor
+          <input id="sellerFullName" required maxlength="100" placeholder="Ex.: João da Silva">
+        </label>
+        <label>Usuário de acesso
+          <input id="sellerUsername" required maxlength="40" autocomplete="off" placeholder="Ex.: joao01">
+        </label>
+        <label>Senha
+          <input id="sellerPassword" type="password" required minlength="6" maxlength="72" autocomplete="new-password" placeholder="Mínimo de 6 caracteres">
         </label>
         <div class="form-actions">
-          <button type="submit" class="primary compact">Adicionar ao evento</button>
+          <button type="submit" class="primary compact">Criar vendedor e acesso</button>
         </div>
         <p id="sellerFormError" class="error"></p>
       </form>
+      <div id="sellerCreated" class="created-box hidden"></div>
     </div>
 
     <div id="sellersList" class="list"></div>
@@ -507,25 +516,7 @@ async function loadSellerEvents(){
 
   select.innerHTML=data.map(e=>`<option value="${e.id}">${escapeHtml(e.name)} • ${formatDate(e.event_date)} • ${escapeHtml(e.status)}</option>`).join("");
   document.getElementById("sellerAddArea").classList.remove("hidden");
-  await loadSellerUsers();
   await loadEventSellers();
-}
-
-async function loadSellerUsers(){
-  const select=document.getElementById("sellerUserSelect");
-  const {data,error}=await supabaseClient.from("profiles")
-    .select("id,full_name,role,active")
-    .eq("role","VENDEDOR")
-    .eq("active",true)
-    .order("full_name",{ascending:true});
-
-  if(error){
-    select.innerHTML=`<option value="">Não foi possível carregar vendedores</option>`;
-    return;
-  }
-  select.innerHTML=data?.length
-    ? data.map(u=>`<option value="${u.id}">${escapeHtml(u.full_name||"Vendedor")} </option>`).join("")
-    : `<option value="">Nenhum vendedor cadastrado ainda</option>`;
 }
 
 async function loadEventSellers(){
@@ -571,19 +562,33 @@ async function loadEventSellers(){
 async function addSellerToEvent(e){
   e.preventDefault();
   const err=document.getElementById("sellerFormError");
+  const createdBox=document.getElementById("sellerCreated");
   err.textContent="";
+  createdBox.classList.add("hidden");
+
   const eventId=document.getElementById("sellerEventSelect").value;
-  const userId=document.getElementById("sellerUserSelect").value;
-  if(!eventId||!userId){err.textContent="Selecione o evento e o vendedor.";return;}
+  const fullName=document.getElementById("sellerFullName").value.trim();
+  const username=document.getElementById("sellerUsername").value.trim().toLowerCase();
+  const password=document.getElementById("sellerPassword").value;
+  if(!eventId||!fullName||!username||!password){err.textContent="Preencha todos os campos.";return;}
+  if(!/^[a-z0-9._-]{3,40}$/.test(username)){err.textContent="Usuário inválido. Use 3 a 40 caracteres: letras, números, ponto, hífen ou sublinhado.";return;}
+  if(password.length<6){err.textContent="A senha precisa ter pelo menos 6 caracteres.";return;}
 
-  const {error}=await supabaseClient.from("event_sellers").insert({
-    event_id:eventId,user_id:userId,active:true
+  const {data:{session}}=await supabaseClient.auth.getSession();
+  if(!session){err.textContent="Sua sessão expirou. Entre novamente como ADM.";return;}
+
+  const response=await fetch(`${cfg.url}/functions/v1/create-event-seller`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":`Bearer ${session.access_token}`},
+    body:JSON.stringify({event_id:eventId,full_name:fullName,username,password})
   });
+  let result={};
+  try{result=await response.json()}catch{}
+  if(!response.ok){err.textContent=result.error||"Não foi possível criar o vendedor.";return;}
 
-  if(error){
-    err.textContent=error.code==="23505"?"Esse vendedor já está vinculado a este evento.":error.message;
-    return;
-  }
+  document.getElementById("sellerForm").reset();
+  createdBox.innerHTML=`<strong>Vendedor criado com sucesso.</strong><br>Usuário: <b>${escapeHtml(result.username)}</b><br><span class="muted">Guarde a senha informada por você. Ela não será exibida novamente.</span>`;
+  createdBox.classList.remove("hidden");
   await loadEventSellers();
 }
 
