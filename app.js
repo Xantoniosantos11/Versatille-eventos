@@ -784,7 +784,7 @@ async function loadStockList(eventId){
 
   const [{data:products,error:productsError},{data:stocks,error:stocksError}]=await Promise.all([
     supabaseClient.from("products").select("id,name,category,active").order("name",{ascending:true}),
-    supabaseClient.from("event_stock").select("product_id,quantity").eq("event_id",eventId)
+    supabaseClient.from("event_stock").select("product_id,current_quantity").eq("event_id",eventId)
   ]);
 
   if(productsError || stocksError){
@@ -792,7 +792,7 @@ async function loadStockList(eventId){
     return;
   }
 
-  const stockMap=new Map((stocks||[]).map(s=>[s.product_id,Number(s.quantity||0)]));
+  const stockMap=new Map((stocks||[]).map(s=>[s.product_id,Number(s.current_quantity||0)]));
   const activeProducts=(products||[]).filter(p=>p.active);
 
   if(!activeProducts.length){
