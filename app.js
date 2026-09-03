@@ -577,14 +577,35 @@ async function addSellerToEvent(e){
   const {data:{session}}=await supabaseClient.auth.getSession();
   if(!session){err.textContent="Sua sessão expirou. Entre novamente como ADM.";return;}
 
-  const response=await fetch(`${cfg.url}/functions/v1/create-event-seller`,{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":`Bearer ${session.access_token}`},
-    body:JSON.stringify({event_id:eventId,full_name:fullName,username,password})
-  });
-  let result={};
-  try{result=await response.json()}catch{}
-  if(!response.ok){err.textContent=result.error||"Não foi possível criar o vendedor.";return;}
+  const { data: result, error: functionError } = await supabaseClient.functions.invoke(
+    "create-event-seller",
+    {
+      body: {
+        event_id: eventId,
+        full_name: fullName,
+        username,
+        password
+      }
+    }
+  );
+
+  if(functionError){
+    let message = functionError.message || "Não foi possível criar o vendedor.";
+    try{
+      if(functionError.context){
+        const body = await functionError.context.json();
+        if(body?.error) message = body.error;
+      }
+    }catch{}
+    err.textContent = message;
+    return;
+  }
+
+  if(!result || result.error){
+    err.textContent = result?.error || "Não foi possível criar o vendedor.";
+    return;
+  }
+
 
   document.getElementById("sellerForm").reset();
   createdBox.innerHTML=`<strong>Vendedor criado com sucesso.</strong><br>Usuário: <b>${escapeHtml(result.username)}</b><br><span class="muted">Guarde a senha informada por você. Ela não será exibida novamente.</span>`;

@@ -21,3 +21,8 @@ Hospede os arquivos em um serviço de hospedagem estática ou rode com um servid
 - Relatórios
 - Realtime entre celulares
 - PWA/offline com fila de sincronização
+
+
+## V9 final
+- Criação de vendedores usa `supabase.functions.invoke`, enviando automaticamente as credenciais necessárias.
+- Edge Function usa `withSupabase({ auth: 'user' })` e valida o ADM pelo perfil.
