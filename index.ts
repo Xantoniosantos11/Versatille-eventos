@@ -19,7 +19,7 @@ export default {
       return json({ error: "Método não permitido." }, 405);
     }
 
-    const requesterId = ctx.userClaims?.sub;
+    const requesterId = ctx.userClaims?.id ?? ctx.userClaims?.sub;
     if (!requesterId) {
       return json({ error: "Sessão inválida." }, 401);
     }
