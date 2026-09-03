@@ -134,6 +134,10 @@ document.querySelectorAll("[data-section]").forEach(btn=>{
       await openProducts();
     } else if(section === "users"){
       await openEventSellers();
+    } else if(section === "sale"){
+      await openNewSale();
+    } else if(section === "mySales"){
+      await openMySales();
     } else {
       alert(`Módulo "${section}" será construído na próxima etapa.`);
     }
@@ -201,6 +205,8 @@ function rebindDashboardButtons(){
       if(section === "events") await openEvents();
       else if(section === "products") await openProducts();
       else if(section === "users") await openEventSellers();
+      else if(section === "sale") await openNewSale();
+      else if(section === "mySales") await openMySales();
       else alert(`Módulo "${section}" será construído na próxima etapa.`);
     });
   });
@@ -617,6 +623,407 @@ async function toggleEventSeller(id,active){
   const {error}=await supabaseClient.from("event_sellers").update({active}).eq("id",id);
   if(error){alert("Não foi possível alterar o acesso ao evento: "+error.message);return}
   await loadEventSellers();
+}
+
+/* =========================================================
+   MÓDULO DE VENDAS
+   ========================================================= */
+
+let saleState = {
+  event: null,
+  products: [],
+  cart: []
+};
+
+async function getSellerEvent(){
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if(!user) return { error: { message: "Sessão expirada. Faça login novamente." } };
+
+  const { data, error } = await supabaseClient
+    .from("event_sellers")
+    .select("event_id,active,events(id,name,event_date,status)")
+    .eq("user_id", user.id)
+    .eq("active", true);
+
+  if(error) return { error };
+
+  const activeLinks = (data || []).filter(x => x.events);
+  if(!activeLinks.length){
+    return { error: { message: "Você não está vinculado a nenhum evento ativo." } };
+  }
+
+  const openLinks = activeLinks.filter(x => x.events.status === "ABERTO");
+  if(!openLinks.length){
+    return { error: { message: "Seu evento não está aberto para vendas." } };
+  }
+
+  return { event: openLinks[0].events };
+}
+
+async function openNewSale(){
+  const content = document.querySelector(".content");
+  const oldHtml = content.innerHTML;
+
+  content.innerHTML = `
+    <div class="module-head">
+      <div>
+        <button id="backSale" class="ghost">← Voltar</button>
+        <div class="eyebrow">VENDAS</div>
+        <h1>Nova venda</h1>
+        <p id="saleEventInfo" class="muted">Carregando evento...</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Produto
+        <select id="saleProductSelect" class="select">
+          <option value="">Carregando produtos...</option>
+        </select>
+      </label>
+
+      <label>Quantidade
+        <input id="saleQty" type="number" min="1" step="1" value="1" inputmode="numeric">
+      </label>
+
+      <button id="addSaleItem" class="primary compact" type="button">+ Adicionar ao pedido</button>
+      <p id="saleFormError" class="error"></p>
+    </div>
+
+    <div class="card">
+      <h2>Pedido</h2>
+      <div id="saleCart" class="list"></div>
+
+      <div style="display:flex;justify-content:space-between;gap:15px;align-items:center;margin-top:18px;padding-top:15px;border-top:1px solid var(--line)">
+        <strong>Total</strong>
+        <strong id="saleTotal" style="font-size:22px;color:var(--accent)">R$ 0,00</strong>
+      </div>
+
+      <label>Forma de pagamento
+        <select id="salePayment" class="select">
+          <option value="PIX">PIX</option>
+          <option value="DINHEIRO">Dinheiro</option>
+          <option value="DEBITO">Débito</option>
+          <option value="CREDITO">Crédito</option>
+        </select>
+      </label>
+
+      <button id="confirmSale" class="primary" type="button">Confirmar venda</button>
+      <p id="saleSubmitError" class="error"></p>
+    </div>
+  `;
+
+  document.getElementById("backSale").onclick = () => {
+    content.innerHTML = oldHtml;
+    rebindDashboardButtons();
+  };
+
+  document.getElementById("addSaleItem").onclick = addItemToSale;
+  document.getElementById("confirmSale").onclick = confirmSale;
+
+  saleState = { event: null, products: [], cart: [] };
+
+  const eventResult = await getSellerEvent();
+  if(eventResult.error){
+    document.getElementById("saleEventInfo").textContent = eventResult.error.message;
+    document.getElementById("saleFormError").textContent = eventResult.error.message;
+    document.getElementById("addSaleItem").disabled = true;
+    document.getElementById("confirmSale").disabled = true;
+    return;
+  }
+
+  saleState.event = eventResult.event;
+  document.getElementById("saleEventInfo").textContent =
+    `${eventResult.event.name} • ${formatDate(eventResult.event.event_date)}`;
+
+  await loadSaleProducts();
+  renderSaleCart();
+}
+
+async function loadSaleProducts(){
+  const select = document.getElementById("saleProductSelect");
+  const { data, error } = await supabaseClient
+    .from("products")
+    .select("id,name,category,price,active")
+    .eq("active", true)
+    .order("name", { ascending: true });
+
+  if(error){
+    select.innerHTML = `<option value="">Erro ao carregar produtos</option>`;
+    document.getElementById("saleFormError").textContent =
+      "Não foi possível carregar os produtos: " + error.message;
+    return;
+  }
+
+  saleState.products = data || [];
+
+  if(!saleState.products.length){
+    select.innerHTML = `<option value="">Nenhum produto ativo cadastrado</option>`;
+    return;
+  }
+
+  select.innerHTML =
+    `<option value="">Selecione um produto</option>` +
+    saleState.products.map(p =>
+      `<option value="${p.id}">${escapeHtml(p.name)} • ${formatMoney(p.price)}</option>`
+    ).join("");
+}
+
+function addItemToSale(){
+  const error = document.getElementById("saleFormError");
+  error.textContent = "";
+
+  const productId = document.getElementById("saleProductSelect").value;
+  const qty = Number(document.getElementById("saleQty").value);
+
+  if(!productId){
+    error.textContent = "Selecione um produto.";
+    return;
+  }
+
+  if(!Number.isInteger(qty) || qty < 1){
+    error.textContent = "Informe uma quantidade válida.";
+    return;
+  }
+
+  const product = saleState.products.find(p => p.id === productId);
+  if(!product){
+    error.textContent = "Produto não encontrado.";
+    return;
+  }
+
+  const existing = saleState.cart.find(i => i.product_id === productId);
+
+  if(existing){
+    existing.quantity += qty;
+  } else {
+    saleState.cart.push({
+      product_id: product.id,
+      name: product.name,
+      price: Number(product.price),
+      quantity: qty
+    });
+  }
+
+  document.getElementById("saleProductSelect").value = "";
+  document.getElementById("saleQty").value = "1";
+  renderSaleCart();
+}
+
+function removeSaleItem(productId){
+  saleState.cart = saleState.cart.filter(i => i.product_id !== productId);
+  renderSaleCart();
+}
+
+function changeSaleQty(productId, delta){
+  const item = saleState.cart.find(i => i.product_id === productId);
+  if(!item) return;
+
+  item.quantity += delta;
+  if(item.quantity <= 0){
+    removeSaleItem(productId);
+    return;
+  }
+
+  renderSaleCart();
+}
+
+function renderSaleCart(){
+  const cart = document.getElementById("saleCart");
+  const totalEl = document.getElementById("saleTotal");
+  if(!cart || !totalEl) return;
+
+  if(!saleState.cart.length){
+    cart.innerHTML = `<div class="empty muted">Nenhum item adicionado ao pedido.</div>`;
+    totalEl.textContent = formatMoney(0);
+    return;
+  }
+
+  cart.innerHTML = saleState.cart.map(item => `
+    <article class="product-card card">
+      <div>
+        <div class="event-title">${escapeHtml(item.name)}</div>
+        <div class="muted">${item.quantity} × ${formatMoney(item.price)}</div>
+        <div style="margin-top:5px;font-weight:800">${formatMoney(item.quantity * item.price)}</div>
+      </div>
+      <div class="product-right">
+        <button class="ghost small-btn" type="button"
+          data-minus-sale="${item.product_id}">−</button>
+        <strong>${item.quantity}</strong>
+        <button class="ghost small-btn" type="button"
+          data-plus-sale="${item.product_id}">+</button>
+        <button class="danger-btn small-btn" type="button"
+          data-remove-sale="${item.product_id}">Remover</button>
+      </div>
+    </article>
+  `).join("");
+
+  const total = saleState.cart.reduce(
+    (sum, item) => sum + (item.quantity * item.price), 0
+  );
+
+  totalEl.textContent = formatMoney(total);
+
+  saleState.cart.forEach(item => {
+    const minus = document.querySelector(`[data-minus-sale="${item.product_id}"]`);
+    const plus = document.querySelector(`[data-plus-sale="${item.product_id}"]`);
+    const remove = document.querySelector(`[data-remove-sale="${item.product_id}"]`);
+
+    if(minus) minus.onclick = () => changeSaleQty(item.product_id, -1);
+    if(plus) plus.onclick = () => changeSaleQty(item.product_id, 1);
+    if(remove) remove.onclick = () => removeSaleItem(item.product_id);
+  });
+}
+
+async function confirmSale(){
+  const error = document.getElementById("saleSubmitError");
+  error.textContent = "";
+
+  if(!saleState.event){
+    error.textContent = "Evento não encontrado.";
+    return;
+  }
+
+  if(!saleState.cart.length){
+    error.textContent = "Adicione pelo menos um produto ao pedido.";
+    return;
+  }
+
+  const paymentMethod = document.getElementById("salePayment").value;
+  const button = document.getElementById("confirmSale");
+
+  button.disabled = true;
+  button.textContent = "Registrando venda...";
+
+  try{
+    const items = saleState.cart.map(item => ({
+      product_id: item.product_id,
+      quantity: item.quantity
+    }));
+
+    /*
+     * A função create_sale é a camada segura do banco:
+     * valida estoque, baixa estoque, grava venda, itens,
+     * pagamento, movimento e auditoria em uma única operação.
+     */
+    const { data, error: rpcError } = await supabaseClient.rpc(
+      "create_sale",
+      {
+        p_event_id: saleState.event.id,
+        p_items: items,
+        p_payment_method: paymentMethod
+      }
+    );
+
+    if(rpcError){
+      console.error("create_sale:", rpcError);
+      error.textContent = rpcError.message || "Não foi possível registrar a venda.";
+      return;
+    }
+
+    const saleId = typeof data === "string" ? data : data?.id;
+
+    alert(
+      `Venda registrada com sucesso!${saleId ? `\nVenda: ${saleId}` : ""}`
+    );
+
+    saleState.cart = [];
+    renderSaleCart();
+
+  } finally {
+    button.disabled = false;
+    button.textContent = "Confirmar venda";
+  }
+}
+
+async function openMySales(){
+  const content = document.querySelector(".content");
+  const oldHtml = content.innerHTML;
+
+  content.innerHTML = `
+    <div class="module-head">
+      <div>
+        <button id="backMySales" class="ghost">← Voltar</button>
+        <div class="eyebrow">VENDAS</div>
+        <h1>Minhas vendas</h1>
+        <p class="muted">Vendas registradas pelo seu usuário.</p>
+      </div>
+    </div>
+    <div id="mySalesList" class="list">
+      <div class="card muted">Carregando vendas...</div>
+    </div>
+  `;
+
+  document.getElementById("backMySales").onclick = () => {
+    content.innerHTML = oldHtml;
+    rebindDashboardButtons();
+  };
+
+  await loadMySales();
+}
+
+async function loadMySales(){
+  const list = document.getElementById("mySalesList");
+
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if(!user){
+    list.innerHTML = `<div class="card error">Sessão expirada.</div>`;
+    return;
+  }
+
+  const { data, error } = await supabaseClient
+    .from("sales")
+    .select(`
+      id,event_id,total,status,created_at,cancelled_at,
+      events(name),
+      sale_items(
+        quantity,
+        unit_price,
+        products(name)
+      ),
+      payments(method,amount)
+    `)
+    .eq("seller_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if(error){
+    list.innerHTML =
+      `<div class="card error">Não foi possível carregar suas vendas: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+
+  if(!data?.length){
+    list.innerHTML = `<div class="card empty">Nenhuma venda registrada ainda.</div>`;
+    return;
+  }
+
+  list.innerHTML = data.map(sale => {
+    const items = (sale.sale_items || [])
+      .map(i => `${i.quantity}× ${escapeHtml(i.products?.name || "Produto")}`)
+      .join(" • ");
+
+    const payment = sale.payments?.[0]?.method || "Pagamento";
+    const status = sale.status || "CONFIRMADA";
+
+    return `
+      <article class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px">
+          <div>
+            <div class="event-title">${escapeHtml(sale.events?.name || "Evento")}</div>
+            <div class="muted">${new Date(sale.created_at).toLocaleString("pt-BR")}</div>
+          </div>
+          <span class="status ${status === "CONFIRMADA" ? "aberto" : "cancelado"}">
+            ${escapeHtml(status)}
+          </span>
+        </div>
+        <div class="muted" style="margin-top:10px">${items || "Sem itens"}</div>
+        <div style="display:flex;justify-content:space-between;margin-top:12px">
+          <span>${escapeHtml(payment)}</span>
+          <strong>${formatMoney(sale.total)}</strong>
+        </div>
+      </article>
+    `;
+  }).join("");
 }
 
 init();
