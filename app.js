@@ -1,36 +1,157 @@
 
 // ===== CONTROLE DE OPERAÇÃO DO EVENTO =====
-async function loadEventOperationsControls(eventId) {
-  const c = document.getElementById("eventOperationsControls");
+async function loadEventOperationsControls(eventId, targetId="eventOperationsPanel") {
+  const c = document.getElementById(targetId);
   if (!c || !eventId) return;
-  const {data: hours} = await supabaseClient.from("event_operating_hours")
-    .select("start_time,end_time,active").eq("event_id", eventId).maybeSingle();
-  const {data: ev} = await supabaseClient.from("events")
-    .select("id,name,status").eq("id", eventId).maybeSingle();
-  if (!ev) return;
-  const closed = ev.status === "FECHADO";
-  c.innerHTML = `
+  window.currentAdminEventId = eventId;
+  c.innerHTML = `<div class="card muted">Carregando controle operacional...</div>`;
+
+  const [evR, hoursR, periodsR, sellersR, accessR] = await Promise.all([
+    supabaseClient.from("events").select("id,name,event_date,location,status").eq("id",eventId).maybeSingle(),
+    supabaseClient.from("event_operating_hours").select("start_time,end_time,active").eq("event_id",eventId).maybeSingle(),
+    supabaseClient.from("event_operating_periods").select("id,period_start,period_end,created_at").eq("event_id",eventId).order("period_start",{ascending:false}),
+    supabaseClient.from("event_sellers").select("user_id,active,profiles(full_name)").eq("event_id",eventId).order("created_at",{ascending:true}),
+    supabaseClient.from("event_seller_period_access").select("id,period_id,seller_id,released_at,closed_at,closed_by").eq("event_id",eventId)
+  ]);
+  const firstError=[evR,hoursR,periodsR,sellersR,accessR].find(r=>r.error);
+  if(firstError){
+    c.innerHTML=`<div class="card error">Não foi possível carregar o controle operacional: ${escapeHtml(firstError.error.message)}</div>`;
+    return;
+  }
+  const ev=evR.data;
+  if(!ev){ c.innerHTML=`<div class="card error">Evento não encontrado.</div>`; return; }
+  const closed=ev.status!=="ABERTO";
+  const periods=periodsR.data||[];
+  const sellers=(sellersR.data||[]).filter(s=>s.active!==false);
+  const accesses=accessR.data||[];
+  const hours=hoursR.data;
+
+  const fmtDateTime=v=>v?new Date(v).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}):"";
+  const periodRows=periods.length ? periods.map(period=>{
+    const pa=accesses.filter(a=>a.period_id===period.id);
+    const sellerRows=sellers.length ? sellers.map(s=>{
+      const a=pa.find(x=>x.seller_id===s.user_id);
+      const name=s.profiles?.full_name||`Garçom ${String(s.user_id).slice(0,8)}`;
+      let status="Não liberado";
+      if(a && !a.closed_at) status="🟢 Liberado";
+      if(a && a.closed_at) status="🔒 Fechado";
+      return `<div class="card" style="margin-top:8px;padding:12px">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+          <div><strong>🍹 ${escapeHtml(name)}</strong><br><span class="muted">${status}</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${(!a || a.closed_at) && !closed ? `<button class="primary compact" data-release-period="${period.id}" data-release-seller="${s.user_id}">🟢 Liberar</button>` : ""}
+            ${a && !a.closed_at && !closed ? `<button class="danger-btn small-btn" data-close-seller-period="${period.id}" data-close-seller="${s.user_id}">🔒 Fechar</button>` : ""}
+            ${a ? `<button class="ghost small-btn" data-seller-period-report="${period.id}" data-report-seller="${s.user_id}">📄 Ver fechamento</button>` : ""}
+          </div>
+        </div>
+      </div>`;
+    }).join("") : `<div class="muted">Nenhum garçom ativo vinculado a este evento.</div>`;
+    return `<div class="card" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div><div class="eyebrow">PERÍODO OPERACIONAL</div><strong>${fmtDateTime(period.period_start)} → ${fmtDateTime(period.period_end)}</strong></div>
+        ${!closed ? `<button class="ghost small-btn" data-refresh-periods="${eventId}">↻ Atualizar</button>` : ""}
+      </div>
+      <div style="margin-top:8px">${sellerRows}</div>
+      <div id="sellerPeriodReport-${period.id}" style="margin-top:8px"></div>
+    </div>`;
+  }).join("") : `<div class="card muted" style="margin-top:12px">Nenhum período operacional criado ainda.</div>`;
+
+  c.innerHTML=`
     <div class="card">
-      <h3>⏰ Operação do evento</h3>
-      <p class="muted">Defina quando as vendas estarão liberadas.</p>
+      <div class="eyebrow">CONTROLE OPERACIONAL</div>
+      <h2>${escapeHtml(ev.name)}</h2>
+      <p class="muted">O ADM define manualmente cada período. O garçom só pode vender quando estiver dentro do período e tiver sido liberado individualmente.</p>
       <div class="grid">
-        <label>Início<input id="eventStartTime" type="time" value="${hours?.start_time?.slice(0,5)||""}"></label>
-        <label>Fim<input id="eventEndTime" type="time" value="${hours?.end_time?.slice(0,5)||""}"></label>
+        <label>Início do novo período\n          <input id="periodStartInput" type="datetime-local" ${closed?"disabled":""}>\n        </label>
+        <label>Fim do novo período\n          <input id="periodEndInput" type="datetime-local" ${closed?"disabled":""}>\n        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button id="createPeriodBtn" class="primary compact" ${closed?"disabled":""}>➕ Criar período</button>
+        <button id="closeEventDayBtn" class="secondary compact" ${closed?"disabled":""}>📊 Fechar relatório do dia</button>
+        <button id="closeEventBtn" class="danger-btn small-btn" ${closed?"disabled":""}>🔒 Fechar evento</button>
+        ${closed?'<button id="deleteFinishedEventBtn" class="danger-btn small-btn">🗑️ Excluir evento definitivamente</button>':""}
+      </div>
+      <p id="periodControlError" class="error"></p>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">HORÁRIO GERAL DO EVENTO</div>
+      <p class="muted">Mantido como configuração geral. O controle de vendas usa os períodos manuais acima.</p>
+      <div class="grid">
+        <label>Início<input id="eventStartTime" type="time" value="${hours?.start_time?.slice(0,5)||""}" ${closed?"disabled":""}></label>
+        <label>Fim<input id="eventEndTime" type="time" value="${hours?.end_time?.slice(0,5)||""}" ${closed?"disabled":""}></label>
       </div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px">
-        <input id="eventHoursActive" type="checkbox" ${hours?.active !== false ? "checked":""}> Horário ativo
+        <input id="eventHoursActive" type="checkbox" ${hours?.active !== false ? "checked":""} ${closed?"disabled":""}> Horário ativo
       </label>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
-        <button id="saveEventHoursBtn" class="primary" ${closed?"disabled":""}>💾 Salvar horário</button>
-        <button id="closeEventDayBtn" class="secondary" ${closed?"disabled":""}>📊 Fechar relatório do dia</button>
-        <button id="closeEventBtn" class="danger" ${closed?"disabled":""}>🔒 Fechar evento</button>
-        ${closed?'<button id="deleteFinishedEventBtn" class="danger">🗑️ Excluir evento definitivamente</button>':""}
-      </div>
+      <button id="saveEventHoursBtn" class="ghost small-btn" style="margin-top:10px" ${closed?"disabled":""}>💾 Salvar horário geral</button>
+    </div>
+
+    <div>
+      <div class="eyebrow" style="margin-top:18px">PERÍODOS E GARÇONS</div>
+      ${periodRows}
     </div>`;
-  document.getElementById("saveEventHoursBtn")?.addEventListener("click", saveEventOperationsHours);
-  document.getElementById("closeEventDayBtn")?.addEventListener("click", closeEventDayFromApp);
-  document.getElementById("closeEventBtn")?.addEventListener("click", closeEventFromApp);
-  document.getElementById("deleteFinishedEventBtn")?.addEventListener("click", deleteFinishedEventFromApp);
+
+  document.getElementById("createPeriodBtn")?.addEventListener("click",()=>createEventPeriodFromApp(eventId,targetId));
+  document.getElementById("saveEventHoursBtn")?.addEventListener("click",saveEventOperationsHours);
+  document.getElementById("closeEventDayBtn")?.addEventListener("click",closeEventDayFromApp);
+  document.getElementById("closeEventBtn")?.addEventListener("click",async()=>{await closeEventFromApp(); await loadEventOperationsControls(eventId,targetId); await loadEvents();});
+  document.getElementById("deleteFinishedEventBtn")?.addEventListener("click",async()=>{await deleteFinishedEventFromApp();});
+  document.querySelectorAll("[data-release-period]").forEach(b=>b.onclick=async()=>{
+    const {error}=await supabaseClient.rpc("release_seller_for_period",{p_period_id:b.dataset.releasePeriod,p_seller_id:b.dataset.releaseSeller});
+    if(error) return alert(error.message);
+    await loadEventOperationsControls(eventId,targetId);
+  });
+  document.querySelectorAll("[data-close-seller-period]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Fechar este garçom para este período? Ele não poderá realizar novas vendas neste período.")) return;
+    const {error}=await supabaseClient.rpc("close_seller_period",{p_period_id:b.dataset.closeSellerPeriod,p_seller_id:b.dataset.closeSeller});
+    if(error) return alert(error.message);
+    await loadEventOperationsControls(eventId,targetId);
+  });
+  document.querySelectorAll("[data-seller-period-report]").forEach(b=>b.onclick=()=>renderSellerPeriodReport(b.dataset.sellerPeriodReport,b.dataset.reportSeller,eventId,targetId));
+  document.querySelectorAll("[data-refresh-periods]").forEach(b=>b.onclick=()=>loadEventOperationsControls(eventId,targetId));
+}
+
+async function createEventPeriodFromApp(eventId,targetId="eventOperationsPanel") {
+  const start=document.getElementById("periodStartInput")?.value;
+  const end=document.getElementById("periodEndInput")?.value;
+  const err=document.getElementById("periodControlError");
+  if(err) err.textContent="";
+  if(!start||!end){ if(err) err.textContent="Informe início e fim do período."; return; }
+  const startIso=new Date(start).toISOString();
+  const endIso=new Date(end).toISOString();
+  if(new Date(endIso)<=new Date(startIso)){ if(err) err.textContent="O fim deve ser depois do início."; return; }
+  const {error}=await supabaseClient.rpc("create_event_operating_period",{p_event_id:eventId,p_period_start:startIso,p_period_end:endIso});
+  if(error){if(err) err.textContent=error.message; return;}
+  alert("Período criado com sucesso. Agora libere cada garçom individualmente.");
+  await loadEventOperationsControls(eventId,targetId);
+}
+
+async function renderSellerPeriodReport(periodId,sellerId,eventId,targetId="eventOperationsPanel") {
+  const target=document.getElementById(`sellerPeriodReport-${periodId}`);
+  if(!target) return;
+  target.innerHTML=`<div class="card muted">Gerando fechamento individual...</div>`;
+  const [periodR,salesR,nameR]=await Promise.all([
+    supabaseClient.from("event_operating_periods").select("period_start,period_end").eq("id",periodId).single(),
+    supabaseClient.from("sales").select("id,total,status,created_at,sale_items(quantity,unit_price,products(name)),payments(method,amount)").eq("event_id",eventId).eq("seller_id",sellerId).order("created_at",{ascending:true}).limit(5000),
+    supabaseClient.from("profiles").select("full_name").eq("id",sellerId).maybeSingle()
+  ]);
+  const e=[periodR,salesR,nameR].find(r=>r.error);
+  if(e){target.innerHTML=`<div class="card error">${escapeHtml(e.error.message)}</div>`;return;}
+  const p=periodR.data;
+  const sales=(salesR.data||[]).filter(s=>new Date(s.created_at)>=new Date(p.period_start)&&new Date(s.created_at)<new Date(p.period_end));
+  const confirmed=sales.filter(s=>s.status==="CONFIRMADA");
+  const revenue=confirmed.reduce((a,s)=>a+Number(s.total||0),0);
+  const payments={}; const products={};
+  confirmed.forEach(s=>{
+    (s.payments||[]).forEach(x=>payments[x.method]=(payments[x.method]||0)+Number(x.amount||0));
+    (s.sale_items||[]).forEach(i=>{const n=i.products?.name||"Produto";products[n]=(products[n]||0)+Number(i.quantity||0);});
+  });
+  const paymentRows=Object.entries(payments).map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>${escapeHtml(reportPaymentLabel(k))}</span><strong>${formatMoney(v)}</strong></div>`).join("")||'<div class="muted">Nenhum pagamento.</div>';
+  const productRows=Object.entries(products).map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>${escapeHtml(k)}</span><strong>${v}</strong></div>`).join("")||'<div class="muted">Nenhum produto.</div>';
+  const saleRows=sales.map(s=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between"><strong>${new Date(s.created_at).toLocaleString("pt-BR")}</strong><strong>${formatMoney(s.total)}</strong></div><div class="muted">${escapeHtml((s.sale_items||[]).map(i=>`${i.quantity}× ${i.products?.name||"Produto"}`).join(", "))} • ${escapeHtml(s.status)}</div></div>`).join("")||'<div class="muted">Nenhuma venda neste período.</div>';
+  const name=nameR.data?.full_name||"Garçom";
+  target.innerHTML=`<div class="card" style="margin-top:8px"><div class="eyebrow">FECHAMENTO INDIVIDUAL</div><h3>${escapeHtml(name)}</h3><div class="muted">${new Date(p.period_start).toLocaleString("pt-BR")} → ${new Date(p.period_end).toLocaleString("pt-BR")}</div><div class="grid" style="margin-top:10px"><div><strong>${confirmed.length}</strong><br><small>Vendas</small></div><div><strong>${formatMoney(revenue)}</strong><br><small>Total</small></div></div><h4>Pagamentos</h4>${paymentRows}<h4>Produtos</h4>${productRows}<h4>Vendas • data e hora</h4>${saleRows}<button class="ghost small-btn" style="margin-top:10px" onclick="window.print()">🖨️ Imprimir</button></div>`;
 }
 async function saveEventOperationsHours() {
   const id=window.currentAdminEventId, start=document.getElementById("eventStartTime")?.value, end=document.getElementById("eventEndTime")?.value;
@@ -59,7 +180,6 @@ async function closeEventFromApp() {
   const {error}=await supabaseClient.rpc("close_event",{p_event_id:id});
   if(error) return alert(error.message);
   alert("Evento fechado com sucesso.");
-  await loadEventOperationsControls(id);
 }
 async function deleteFinishedEventFromApp() {
   const id=window.currentAdminEventId;
@@ -263,6 +383,7 @@ async function openEvents(){
     </div>
 
     <div id="eventsList" class="list"></div>
+    <div id="eventOperationsPanel"></div>
   `;
 
   document.getElementById("backDashboard").onclick = () => {
@@ -313,6 +434,7 @@ async function loadEvents(){
       <div class="event-right">
         <span class="status ${e.status.toLowerCase()}">${escapeHtml(e.status)}</span>
         <div class="event-actions">
+          ${e.status === "ABERTO" ? `<button class="ghost small-btn" data-operations="${e.id}">⏱️ Períodos</button>` : ""}
           ${e.status === "ABERTO" ? `<button class="ghost small-btn" data-close="${e.id}">Fechar</button>` : ""}
           ${e.status !== "CANCELADO" && e.status !== "FECHADO" ? `<button class="danger-btn small-btn" data-cancel="${e.id}">Cancelar</button>` : ""}
         </div>
@@ -322,6 +444,7 @@ async function loadEvents(){
 
   document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => updateEventStatus(b.dataset.close, "FECHADO"));
   document.querySelectorAll("[data-cancel]").forEach(b => b.onclick = () => updateEventStatus(b.dataset.cancel, "CANCELADO"));
+  document.querySelectorAll("[data-operations]").forEach(b => b.onclick = () => loadEventOperationsControls(b.dataset.operations, "eventOperationsPanel"));
 }
 
 async function createEvent(e){
@@ -1597,6 +1720,7 @@ async function openReports(){
 
     <div id="reportDailyControls"></div>
     <div id="reportDailyArea"></div>
+    <div id="eventOperationsControls"></div>
     <div id="reportArea">
       <div class="card muted">Selecione um evento para gerar o relatório.</div>
     </div>
@@ -1678,7 +1802,7 @@ async function loadEventReport(){
 
   const event=eventR.data;
   window.currentAdminEventId=eventId;
-  loadEventOperationsControls(eventId);
+  loadEventOperationsControls(eventId,"eventOperationsControls");
   setupDailyReport(eventId,"reportDailyControls",null,false);
   const sales=salesR.data||[];
   const stock=stockR.data||[];
@@ -2261,7 +2385,7 @@ async function setupDailyReport(eventId, targetId, sellerId=null, sellerMode=fal
     window.addEventListener("load", async () => {
       try {
         const registration = await navigator.serviceWorker.register(
-          "./service-worker.js?v=16",
+          "./service-worker.js?v=19",
           { scope: "./" }
         );
         console.log("Versatille PWA: Service Worker registrado.", registration.scope);
