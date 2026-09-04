@@ -142,6 +142,7 @@ async function handleDashboardSection(section){
   else if(section === "sale") await openNewSale();
   else if(section === "mySales") await openMySales();
   else if(section === "organizationDashboard") await openOrganizationDashboard();
+  else if(section === "reports") await openReports();
   else alert(`Módulo "${section}" será construído na próxima etapa.`);
 }
 
@@ -1342,6 +1343,252 @@ async function loadMySales(){
   }).join("");
 }
 
+
+
+
+/* =========================================================
+   RELATÓRIO FINAL DO EVENTO | ADM
+   ========================================================= */
+
+function reportPaymentLabel(method){
+  return ({PIX:"PIX",DINHEIRO:"Dinheiro",DEBITO:"Débito",CREDITO:"Crédito"})[method] || method || "Outro";
+}
+
+function reportMovementLabel(type){
+  return ({
+    ENTRADA:"Entrada",
+    VENDA:"Venda",
+    PERDA:"Perda",
+    QUEBRA:"Quebra",
+    CONSUMO_INTERNO:"Consumo interno",
+    AJUSTE:"Ajuste"
+  })[type] || type || "Movimentação";
+}
+
+async function openReports(){
+  const content=document.querySelector(".content");
+  const oldHtml=content.innerHTML;
+
+  content.innerHTML=`
+    <div class="module-head">
+      <div>
+        <button id="backReports" class="ghost">← Voltar</button>
+        <div class="eyebrow">ADMINISTRAÇÃO</div>
+        <h1>Relatório do evento</h1>
+        <p class="muted">Fechamento, vendas, pagamentos e conferência do estoque.</p>
+      </div>
+      <button id="printReportBtn" class="primary compact" disabled>🖨️ Imprimir</button>
+    </div>
+
+    <div class="card">
+      <label>Selecionar evento
+        <select id="reportEventSelect" class="select">
+          <option value="">Carregando eventos...</option>
+        </select>
+      </label>
+      <p id="reportStatus" class="muted" style="margin-bottom:0"></p>
+    </div>
+
+    <div id="reportArea">
+      <div class="card muted">Selecione um evento para gerar o relatório.</div>
+    </div>
+  `;
+
+  document.getElementById("backReports").onclick=()=>{
+    content.innerHTML=oldHtml;
+    rebindDashboardButtons();
+  };
+  document.getElementById("reportEventSelect").onchange=loadEventReport;
+  document.getElementById("printReportBtn").onclick=()=>window.print();
+
+  await loadReportEvents();
+}
+
+async function loadReportEvents(){
+  const select=document.getElementById("reportEventSelect");
+  const {data,error}=await supabaseClient
+    .from("events")
+    .select("id,name,event_date,status")
+    .order("event_date",{ascending:false})
+    .order("created_at",{ascending:false});
+
+  if(error){
+    select.innerHTML=`<option value="">Erro ao carregar eventos</option>`;
+    document.getElementById("reportArea").innerHTML=`<div class="card error">Não foi possível carregar os eventos: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  if(!data?.length){
+    select.innerHTML=`<option value="">Nenhum evento cadastrado</option>`;
+    return;
+  }
+
+  select.innerHTML=`<option value="">Selecione um evento</option>`+
+    data.map(e=>`<option value="${e.id}">${escapeHtml(e.name)} • ${formatDate(e.event_date)} • ${escapeHtml(e.status)}</option>`).join("");
+}
+
+async function loadEventReport(){
+  const eventId=document.getElementById("reportEventSelect")?.value;
+  const area=document.getElementById("reportArea");
+  const printBtn=document.getElementById("printReportBtn");
+  const statusEl=document.getElementById("reportStatus");
+  printBtn.disabled=true;
+  if(!eventId){
+    area.innerHTML=`<div class="card muted">Selecione um evento para gerar o relatório.</div>`;
+    statusEl.textContent="";
+    return;
+  }
+
+  area.innerHTML=`<div class="card muted">Gerando relatório...</div>`;
+
+  const eventPromise=supabaseClient.from("events")
+    .select("id,name,event_date,location,status,created_at,closed_at")
+    .eq("id",eventId).single();
+  const salesPromise=supabaseClient.from("sales")
+    .select("id,seller_id,total,status,created_at,cancelled_at,sale_items(quantity,unit_price,products(name)),payments(method,amount)")
+    .eq("event_id",eventId)
+    .order("created_at",{ascending:false})
+    .limit(5000);
+  const stockPromise=supabaseClient.from("event_stock")
+    .select("product_id,initial_quantity,current_quantity,minimum_quantity,products(name,active)")
+    .eq("event_id",eventId);
+  const movementsPromise=supabaseClient.from("stock_movements")
+    .select("product_id,user_id,movement_type,quantity,reason,created_at,products(name)")
+    .eq("event_id",eventId)
+    .order("created_at",{ascending:true})
+    .limit(5000);
+  const sellerNamesPromise=supabaseClient.rpc("get_event_seller_names",{p_event_id:eventId});
+
+  const [eventR,salesR,stockR,movementsR,sellerNamesR]=await Promise.all([
+    eventPromise,salesPromise,stockPromise,movementsPromise,sellerNamesPromise
+  ]);
+  const firstError=[eventR,salesR,stockR,movementsR,sellerNamesR].find(r=>r.error);
+  if(firstError){
+    area.innerHTML=`<div class="card error">Não foi possível gerar o relatório: ${escapeHtml(firstError.error.message)}</div>`;
+    statusEl.textContent="";
+    return;
+  }
+
+  const event=eventR.data;
+  const sales=salesR.data||[];
+  const stock=stockR.data||[];
+  const movements=movementsR.data||[];
+  const sellerNames={};
+  (sellerNamesR.data||[]).forEach(p=>sellerNames[p.user_id]=p.full_name||"Garçom");
+
+  const confirmed=sales.filter(s=>s.status==="CONFIRMADA");
+  const cancelled=sales.filter(s=>s.status==="CANCELADA");
+  const revenue=confirmed.reduce((sum,s)=>sum+Number(s.total||0),0);
+  const averageTicket=confirmed.length ? revenue/confirmed.length : 0;
+
+  const sellerTotals={};
+  const paymentTotals={};
+  const productTotals={};
+  confirmed.forEach(s=>{
+    const seller=s.seller_id||"sem-vendedor";
+    if(!sellerTotals[seller]) sellerTotals[seller]={sales:0,total:0};
+    sellerTotals[seller].sales++;
+    sellerTotals[seller].total+=Number(s.total||0);
+
+    (s.payments||[]).forEach(p=>{
+      const method=p.method||"OUTRO";
+      paymentTotals[method]=(paymentTotals[method]||0)+Number(p.amount||0);
+    });
+    (s.sale_items||[]).forEach(item=>{
+      const name=item.products?.name||"Produto";
+      const qty=Number(item.quantity||0);
+      const total=qty*Number(item.unit_price||0);
+      if(!productTotals[name]) productTotals[name]={qty:0,total:0};
+      productTotals[name].qty+=qty;
+      productTotals[name].total+=total;
+    });
+  });
+
+  const movementTotals={ENTRADA:0,VENDA:0,PERDA:0,QUEBRA:0,CONSUMO_INTERNO:0,AJUSTE:0};
+  movements.forEach(m=>movementTotals[m.movement_type]=(movementTotals[m.movement_type]||0)+Number(m.quantity||0));
+
+  const moneyRows=(obj, labelFn)=>{
+    const rows=Object.entries(obj).sort((a,b)=>{
+      const av=typeof a[1]==="object"?a[1].total:a[1];
+      const bv=typeof b[1]==="object"?b[1].total:b[1];
+      return bv-av;
+    });
+    return rows.length ? rows.map(([key,value])=>{
+      const total=typeof value==="object"?value.total:value;
+      const extra=typeof value==="object"?`<small class="muted">${value.sales} venda(s)</small>`:"";
+      return `<div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)"><span>${escapeHtml(labelFn(key))}<br>${extra}</span><strong>${formatMoney(total)}</strong></div>`;
+    }).join("") : `<div class="muted">Nenhum dado disponível.</div>`;
+  };
+
+  const productRows=Object.entries(productTotals).sort((a,b)=>b[1].qty-a[1].qty).map(([name,v])=>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)"><span>${escapeHtml(name)}<br><small class="muted">${v.qty} unidade(s)</small></span><strong>${formatMoney(v.total)}</strong></div>`
+  ).join("");
+
+  const stockRows=stock.map(s=>{
+    const initial=Number(s.initial_quantity||0);
+    const current=Number(s.current_quantity||0);
+    const minimum=Number(s.minimum_quantity||0);
+    const productName=s.products?.name||"Produto";
+    const sold=movements.filter(m=>m.product_id===s.product_id&&m.movement_type==="VENDA").reduce((a,m)=>a+Number(m.quantity||0),0);
+    const loss=movements.filter(m=>m.product_id===s.product_id&&["PERDA","QUEBRA","CONSUMO_INTERNO"].includes(m.movement_type)).reduce((a,m)=>a+Number(m.quantity||0),0);
+    const entries=movements.filter(m=>m.product_id===s.product_id&&m.movement_type==="ENTRADA").reduce((a,m)=>a+Number(m.quantity||0),0);
+    const expected=initial+entries-sold-loss;
+    const adjustment=current-expected;
+    return `<div style="padding:12px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:12px"><strong>${escapeHtml(productName)}${current<=minimum?" ⚠️":""}</strong><strong>${current} un.</strong></div>
+      <div class="muted">Inicial: ${initial} • Entradas: +${entries} • Vendidas: -${sold} • Perdas/quebras/consumo: -${loss}</div>
+      <div class="muted">Saldo calculado: ${expected} • Ajuste líquido: ${adjustment>=0?"+":""}${adjustment}</div>
+    </div>`;
+  }).join("");
+
+  const movementRows=movements.slice().reverse().slice(0,120).map(m=>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)"><span><strong>${escapeHtml(reportMovementLabel(m.movement_type))}</strong><br><small class="muted">${escapeHtml(m.products?.name||"Produto")} • ${new Date(m.created_at).toLocaleString("pt-BR")}${m.reason?" • "+escapeHtml(m.reason):""}</small></span><strong>${Number(m.quantity||0)}</strong></div>`
+  ).join("");
+
+  const sellerRows=Object.entries(sellerTotals).sort((a,b)=>b[1].total-a[1].total).map(([id,v])=>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)"><span>${escapeHtml(sellerNames[id]||"Garçom") }<br><small class="muted">${v.sales} venda(s)</small></span><strong>${formatMoney(v.total)}</strong></div>`
+  ).join("");
+
+  const closedText=event.status==="FECHADO" && event.closed_at
+    ? `Fechado em ${new Date(event.closed_at).toLocaleString("pt-BR")}`
+    : event.status==="ABERTO" ? "Evento ainda aberto" : `Status: ${event.status}`;
+
+  statusEl.textContent=closedText;
+  area.innerHTML=`
+    <div class="card" id="printableReport">
+      <div class="eyebrow">RELATÓRIO DO EVENTO</div>
+      <h2>${escapeHtml(event.name)}</h2>
+      <div class="muted">${formatDate(event.event_date)}${event.location?" • "+escapeHtml(event.location):""} • ${escapeHtml(event.status)}</div>
+      <p class="muted">${escapeHtml(closedText)}</p>
+
+      <div class="grid">
+        <div class="card"><div class="eyebrow">FATURAMENTO</div><h2>${formatMoney(revenue)}</h2><div class="muted">vendas confirmadas</div></div>
+        <div class="card"><div class="eyebrow">VENDAS</div><h2>${confirmed.length}</h2><div class="muted">confirmadas</div></div>
+        <div class="card"><div class="eyebrow">TICKET MÉDIO</div><h2>${formatMoney(averageTicket)}</h2><div class="muted">por venda</div></div>
+        <div class="card"><div class="eyebrow">CANCELADAS</div><h2>${cancelled.length}</h2><div class="muted">vendas</div></div>
+      </div>
+
+      <div class="card"><div class="eyebrow">VENDAS POR GARÇOM</div>${sellerRows||`<div class="muted">Nenhuma venda confirmada.</div>`}</div>
+      <div class="card"><div class="eyebrow">FORMAS DE PAGAMENTO</div>${moneyRows(paymentTotals,reportPaymentLabel)}</div>
+      <div class="card"><div class="eyebrow">PRODUTOS VENDIDOS</div>${productRows||`<div class="muted">Nenhum produto vendido.</div>`}</div>
+
+      <div class="card">
+        <div class="eyebrow">MOVIMENTAÇÃO DE ESTOQUE</div>
+        <div class="grid">
+          <div><strong>Entradas</strong><br>${movementTotals.ENTRADA}</div>
+          <div><strong>Vendas</strong><br>${movementTotals.VENDA}</div>
+          <div><strong>Perdas</strong><br>${movementTotals.PERDA}</div>
+          <div><strong>Quebras</strong><br>${movementTotals.QUEBRA}</div>
+          <div><strong>Consumo interno</strong><br>${movementTotals.CONSUMO_INTERNO}</div>
+          <div><strong>Ajustes</strong><br>${movementTotals.AJUSTE}</div>
+        </div>
+      </div>
+
+      <div class="card"><div class="eyebrow">CONFERÊNCIA DO ESTOQUE</div>${stockRows||`<div class="muted">Nenhum estoque registrado.</div>`}</div>
+      <div class="card"><div class="eyebrow">MOVIMENTAÇÕES RECENTES</div>${movementRows||`<div class="muted">Nenhuma movimentação.</div>`}</div>
+    </div>
+  `;
+  printBtn.disabled=false;
+}
 
 /* =========================================================
    PAINEL DA ORGANIZAÇÃO | SOMENTE LEITURA
