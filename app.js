@@ -134,25 +134,22 @@ logoutBtn.addEventListener("click", async ()=>{
 });
 
 
-document.querySelectorAll("[data-section]").forEach(btn=>{
-  btn.addEventListener("click", async ()=>{
-    const section = btn.dataset.section;
-    if(section === "events"){
-      await openEvents();
-    } else if(section === "products"){
-      await openProducts();
-    } else if(section === "users"){
-      await openEventSellers();
-    } else if(section === "stock"){
-      await openStock();
-    } else if(section === "sale"){
-      await openNewSale();
-    } else if(section === "mySales"){
-      await openMySales();
-    } else {
-      alert(`Módulo "${section}" será construído na próxima etapa.`);
-    }
-  });
+async function handleDashboardSection(section){
+  if(section === "events") await openEvents();
+  else if(section === "products") await openProducts();
+  else if(section === "users") await openEventSellers();
+  else if(section === "stock") await openStock();
+  else if(section === "sale") await openNewSale();
+  else if(section === "mySales") await openMySales();
+  else if(section === "organizationDashboard") await openOrganizationDashboard();
+  else alert(`Módulo "${section}" será construído na próxima etapa.`);
+}
+
+document.addEventListener("click", async (event)=>{
+  const btn = event.target.closest("[data-section]");
+  if(!btn) return;
+  event.preventDefault();
+  await handleDashboardSection(btn.dataset.section);
 });
 
 async function openEvents(){
@@ -210,21 +207,8 @@ async function openEvents(){
 }
 
 function rebindDashboardButtons(){
-  document.querySelectorAll("[data-section]").forEach(btn=>{
-    btn.addEventListener("click", async ()=>{
-      const section = btn.dataset.section;
-      if(section === "events") await openEvents();
-      else if(section === "products") await openProducts();
-      else if(section === "users") await openEventSellers();
-      else if(section === "stock") await openStock();
-      else if(section === "sale") await openNewSale();
-      else if(section === "mySales") await openMySales();
-      else if(section === "organizationDashboard") await openOrganizationDashboard();
-      else alert(`Módulo "${section}" será construído na próxima etapa.`);
-    });
-  });
+  // Compatibilidade com módulos antigos. O roteador usa delegação de eventos.
 }
-
 async function loadEvents(){
   const list = document.getElementById("eventsList");
   list.innerHTML = `<div class="card muted">Carregando eventos...</div>`;
