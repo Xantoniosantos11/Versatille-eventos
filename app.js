@@ -14,6 +14,7 @@ const panelTitle = document.getElementById("panelTitle");
 const panelSubtitle = document.getElementById("panelSubtitle");
 const admArea = document.getElementById("admArea");
 const sellerArea = document.getElementById("sellerArea");
+const organizationArea = document.getElementById("organizationArea");
 const statusText = document.getElementById("statusText");
 const statusDot = document.querySelector(".dot");
 
@@ -82,13 +83,21 @@ async function loadProfile(user){
 
   userInfo.textContent = profile.full_name || user.email;
   roleBadge.textContent = profile.role;
-  panelTitle.textContent = profile.role === "ADM" ? "Painel administrativo" : "Painel do vendedor";
-  panelSubtitle.textContent = profile.role === "ADM"
-    ? "Controle de eventos, produtos, estoque e relatórios."
-    : "Registre vendas do evento com seu usuário individual.";
+
+  if(profile.role === "ADM"){
+    panelTitle.textContent = "Painel administrativo";
+    panelSubtitle.textContent = "Controle de eventos, produtos, estoque e relatórios.";
+  } else if(profile.role === "ORGANIZACAO"){
+    panelTitle.textContent = "Painel da organização";
+    panelSubtitle.textContent = "Acompanhamento do evento em modo somente leitura.";
+  } else {
+    panelTitle.textContent = "Painel do vendedor";
+    panelSubtitle.textContent = "Registre vendas do evento com seu usuário individual.";
+  }
 
   admArea.classList.toggle("hidden", profile.role !== "ADM");
   sellerArea.classList.toggle("hidden", profile.role !== "VENDEDOR");
+  organizationArea.classList.toggle("hidden", profile.role !== "ORGANIZACAO");
   showDashboard();
 }
 
@@ -210,6 +219,7 @@ function rebindDashboardButtons(){
       else if(section === "stock") await openStock();
       else if(section === "sale") await openNewSale();
       else if(section === "mySales") await openMySales();
+      else if(section === "organizationDashboard") await openOrganizationDashboard();
       else alert(`Módulo "${section}" será construído na próxima etapa.`);
     });
   });
@@ -1330,6 +1340,288 @@ async function loadMySales(){
       </article>
     `;
   }).join("");
+}
+
+
+/* =========================================================
+   PAINEL DA ORGANIZAÇÃO | SOMENTE LEITURA
+   ========================================================= */
+
+let organizationState = {
+  events: [],
+  eventId: null
+};
+
+function orgPaymentLabel(method){
+  return ({
+    PIX: "PIX",
+    DINHEIRO: "Dinheiro",
+    DEBITO: "Débito",
+    CREDITO: "Crédito"
+  })[method] || method || "Outro";
+}
+
+function orgMovementSign(type){
+  return type === "ENTRADA" ? "+" : "-";
+}
+
+async function openOrganizationDashboard(){
+  const content = document.querySelector(".content");
+  const oldHtml = content.innerHTML;
+
+  content.innerHTML = `
+    <div class="module-head">
+      <div>
+        <button id="backOrganization" class="ghost">← Voltar</button>
+        <div class="eyebrow">ORGANIZAÇÃO</div>
+        <h1>Painel do evento</h1>
+        <p class="muted">Acompanhamento completo em modo somente leitura.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Evento autorizado
+        <select id="organizationEventSelect" class="select">
+          <option value="">Carregando...</option>
+        </select>
+      </label>
+      <button id="organizationRefresh" class="ghost" type="button">↻ Atualizar dados</button>
+    </div>
+
+    <div id="organizationDashboardList" class="list">
+      <div class="card muted">Carregando...</div>
+    </div>
+  `;
+
+  document.getElementById("backOrganization").onclick = () => {
+    content.innerHTML = oldHtml;
+    rebindDashboardButtons();
+  };
+  document.getElementById("organizationEventSelect").onchange = async (e) => {
+    organizationState.eventId = e.target.value;
+    await loadOrganizationEventData();
+  };
+  document.getElementById("organizationRefresh").onclick = loadOrganizationEventData;
+
+  await loadOrganizationEvents();
+}
+
+async function loadOrganizationEvents(){
+  const select = document.getElementById("organizationEventSelect");
+  const list = document.getElementById("organizationDashboardList");
+
+  const {data, error} = await supabaseClient
+    .from("event_access")
+    .select("event_id,active,events(id,name,event_date,location,status)")
+    .eq("user_id", (await supabaseClient.auth.getUser()).data.user?.id)
+    .eq("active", true);
+
+  if(error){
+    select.innerHTML = `<option value="">Erro</option>`;
+    list.innerHTML = `<div class="card error">Não foi possível carregar os eventos: ${escapeHtml(error.message)}</div>`;
+    return;
+  }
+
+  const rows = (data || []).filter(row => row.events);
+  organizationState.events = rows.map(row => row.events);
+
+  if(!rows.length){
+    select.innerHTML = `<option value="">Nenhum evento autorizado</option>`;
+    list.innerHTML = `<div class="card empty">Nenhum evento está vinculado a este acesso.</div>`;
+    return;
+  }
+
+  select.innerHTML = rows.map(row => {
+    const e = row.events;
+    return `<option value="${e.id}">${escapeHtml(e.name)} • ${formatDate(e.event_date)}</option>`;
+  }).join("");
+
+  organizationState.eventId = rows[0].events.id;
+  select.value = organizationState.eventId;
+  await loadOrganizationEventData();
+}
+
+async function loadOrganizationEventData(){
+  const eventId = organizationState.eventId || document.getElementById("organizationEventSelect")?.value;
+  const list = document.getElementById("organizationDashboardList");
+  if(!list || !eventId) return;
+
+  list.innerHTML = `<div class="card muted">Atualizando dados do evento...</div>`;
+
+  const eventPromise = supabaseClient
+    .from("events")
+    .select("id,name,event_date,location,status")
+    .eq("id", eventId)
+    .single();
+
+  const salesPromise = supabaseClient
+    .from("sales")
+    .select(`
+      id,seller_id,total,status,created_at,cancelled_at,
+      sale_items(quantity,unit_price,products(name)),
+      payments(method,amount)
+    `)
+    .eq("event_id", eventId)
+    .order("created_at", {ascending:false})
+    .limit(1000);
+
+  const stockPromise = supabaseClient
+    .from("event_stock")
+    .select("product_id,initial_quantity,current_quantity,minimum_quantity,products(name,active)")
+    .eq("event_id", eventId);
+
+  const movementsPromise = supabaseClient
+    .from("stock_movements")
+    .select("product_id,user_id,movement_type,quantity,reason,created_at,products(name)")
+    .eq("event_id", eventId)
+    .order("created_at", {ascending:false})
+    .limit(300);
+
+  const sellersPromise = supabaseClient
+    .from("event_sellers")
+    .select("user_id,active,profiles(full_name)")
+    .eq("event_id", eventId);
+
+  const [eventR, salesR, stockR, movementsR, sellersR] =
+    await Promise.all([eventPromise,salesPromise,stockPromise,movementsPromise,sellersPromise]);
+
+  const firstError = [eventR,salesR,stockR,movementsR,sellersR].find(r => r.error);
+  if(firstError){
+    list.innerHTML =
+      `<div class="card error">Não foi possível carregar o painel: ${escapeHtml(firstError.error.message)}</div>`;
+    return;
+  }
+
+  const event = eventR.data;
+  const sales = salesR.data || [];
+  const stock = stockR.data || [];
+  const movements = movementsR.data || [];
+  const sellers = sellersR.data || [];
+
+  const sellerNames = {};
+  sellers.forEach(s => {
+    sellerNames[s.user_id] = s.profiles?.full_name || `Garçom ${String(s.user_id || "").slice(0,8)}`;
+  });
+
+  const confirmed = sales.filter(s => s.status !== "CANCELADA");
+  const cancelled = sales.filter(s => s.status === "CANCELADA");
+  const revenue = confirmed.reduce((sum,s) => sum + Number(s.total || 0), 0);
+
+  const sellerTotals = {};
+  const paymentTotals = {};
+  const productTotals = {};
+
+  confirmed.forEach(s => {
+    const seller = s.seller_id || "sem-vendedor";
+    sellerTotals[seller] = (sellerTotals[seller] || 0) + Number(s.total || 0);
+
+    (s.payments || []).forEach(p => {
+      const method = p.method || "OUTRO";
+      paymentTotals[method] = (paymentTotals[method] || 0) + Number(p.amount || 0);
+    });
+
+    (s.sale_items || []).forEach(item => {
+      const productName = item.products?.name || "Produto";
+      const qty = Number(item.quantity || 0);
+      const total = qty * Number(item.unit_price || 0);
+      if(!productTotals[productName]) productTotals[productName] = {qty:0,total:0};
+      productTotals[productName].qty += qty;
+      productTotals[productName].total += total;
+    });
+  });
+
+  const lowStock = stock.filter(s =>
+    Number(s.current_quantity || 0) <= Number(s.minimum_quantity || 0)
+  );
+
+  const rankRows = (obj, labelFn) => {
+    const entries = Object.entries(obj).sort((a,b) => b[1] - a[1]);
+    if(!entries.length) return `<div class="muted">Nenhum dado disponível.</div>`;
+    return entries.map(([key,value]) => `
+      <div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)">
+        <span>${escapeHtml(labelFn(key))}</span>
+        <strong>${formatMoney(value)}</strong>
+      </div>
+    `).join("");
+  };
+
+  const productRows = Object.entries(productTotals)
+    .sort((a,b) => b[1].qty - a[1].qty)
+    .map(([name,value]) => `
+      <div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)">
+        <span>${escapeHtml(name)}<br><small class="muted">${value.qty} unidade(s)</small></span>
+        <strong>${formatMoney(value.total)}</strong>
+      </div>
+    `).join("");
+
+  const stockRows = stock.map(s => {
+    const current = Number(s.current_quantity || 0);
+    const minimum = Number(s.minimum_quantity || 0);
+    return `
+      <div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)">
+        <span>${escapeHtml(s.products?.name || "Produto")}${current <= minimum ? " ⚠️" : ""}
+          <br><small class="muted">Inicial: ${Number(s.initial_quantity || 0)} • Mínimo: ${minimum}</small>
+        </span>
+        <strong>${current}</strong>
+      </div>
+    `;
+  }).join("");
+
+  const movementRows = movements.slice(0,80).map(m => `
+    <div style="padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:12px">
+        <strong>${escapeHtml(m.movement_type || "")}</strong>
+        <strong>${orgMovementSign(m.movement_type)}${Number(m.quantity || 0)}</strong>
+      </div>
+      <div class="muted">${escapeHtml(m.products?.name || "Produto")} • ${new Date(m.created_at).toLocaleString("pt-BR")}${m.reason ? " • " + escapeHtml(m.reason) : ""}</div>
+    </div>
+  `).join("");
+
+  list.innerHTML = `
+    <div class="card">
+      <div class="eyebrow">EVENTO</div>
+      <h2>${escapeHtml(event?.name || "Evento")}</h2>
+      <div class="muted">${formatDate(event?.event_date)}${event?.location ? " • " + escapeHtml(event.location) : ""} • ${escapeHtml(event?.status || "")}</div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="eyebrow">VENDAS</div><h2>${confirmed.length}</h2><div class="muted">confirmadas</div></div>
+      <div class="card"><div class="eyebrow">FATURAMENTO</div><h2>${formatMoney(revenue)}</h2><div class="muted">vendas confirmadas</div></div>
+      <div class="card"><div class="eyebrow">ESTOQUE</div><h2>${stock.length}</h2><div class="muted">produtos no evento</div></div>
+      <div class="card"><div class="eyebrow">CANCELADAS</div><h2>${cancelled.length}</h2><div class="muted">vendas</div></div>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">VENDAS POR GARÇOM</div>
+      ${rankRows(sellerTotals, id => sellerNames[id] || `Garçom ${String(id).slice(0,8)}`)}
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">FORMAS DE PAGAMENTO</div>
+      ${rankRows(paymentTotals, id => orgPaymentLabel(id))}
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">PRODUTOS VENDIDOS</div>
+      ${productRows || `<div class="muted">Nenhum produto vendido.</div>`}
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">ESTOQUE ATUAL</div>
+      ${stockRows || `<div class="muted">Nenhum estoque cadastrado.</div>`}
+      ${lowStock.length ? `<p class="error" style="margin-bottom:0">⚠️ ${lowStock.length} produto(s) estão no mínimo ou abaixo.</p>` : ""}
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">MOVIMENTAÇÕES RECENTES</div>
+      ${movementRows || `<div class="muted">Nenhuma movimentação registrada.</div>`}
+    </div>
+
+    <div class="card status-box">
+      <span class="dot" style="background:#55d98a"></span>
+      <span>Acesso de Organização: somente leitura. Este painel não possui ações de alteração, exclusão ou criação.</span>
+    </div>
+  `;
 }
 
 init();
