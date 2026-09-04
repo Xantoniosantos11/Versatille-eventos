@@ -1,46 +1,233 @@
 
-// ===== PWA / INSTALAÇÃO =====
-let deferredInstallPrompt = null;
+// ===== RELATÓRIO DIÁRIO: ADM / ORGANIZAÇÃO / GARÇOM =====
+function localDateKey(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
 
-function setupPWA() {
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./service-worker.js?v=12").catch(err => {
-        console.warn("Service Worker não registrado:", err);
+function formatDayBR(key) {
+  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return key || "";
+  const [y,m,d] = key.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function dayRangeUTCFromLocalDate(key) {
+  const [y,m,d] = key.split("-").map(Number);
+  const start = new Date(y, m-1, d, 0, 0, 0, 0);
+  const end = new Date(y, m-1, d+1, 0, 0, 0, 0);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+async function getDailySales(eventId, dayKey, sellerOnlyId = null) {
+  const range = dayRangeUTCFromLocalDate(dayKey);
+  let q = supabaseClient
+    .from("sales")
+    .select(`
+      id,event_id,seller_id,total,status,created_at,cancelled_at,
+      sale_items(quantity,unit_price,products(name)),
+      payments(method,amount)
+    `)
+    .eq("event_id", eventId)
+    .gte("created_at", range.start)
+    .lt("created_at", range.end)
+    .order("created_at", {ascending:false});
+
+  if (sellerOnlyId) q = q.eq("seller_id", sellerOnlyId);
+
+  const {data,error} = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+async function getDailySellerNames(eventId) {
+  const {data,error} = await supabaseClient.rpc("get_event_seller_names", {p_event_id:eventId});
+  if (error) throw error;
+  return Object.fromEntries((data||[]).map(x => [x.user_id, x.full_name || "Garçom"]));
+}
+
+function renderDailySalesList(sales, sellerNames={}) {
+  if (!sales.length) return '<div class="empty-state">Nenhuma venda encontrada neste dia.</div>';
+  return sales.map(s => {
+    const name = sellerNames[s.seller_id] || "Garçom";
+    const dt = new Date(s.created_at);
+    const when = dt.toLocaleString("pt-BR");
+    const status = s.status === "CANCELADA" ? "❌ CANCELADA" : "✅ CONFIRMADA";
+    return `<div class="card" style="margin-bottom:8px">
+      <strong>${name}</strong>
+      <div>${when}</div>
+      <div>${status}</div>
+      <strong>${formatBRL(Number(s.total)||0)}</strong>
+    </div>`;
+  }).join("");
+}
+
+async function openDailyReport(eventId, dayKey, mode="admin", sellerId=null) {
+  const c = document.getElementById("dailyReportArea");
+  if (!c) return;
+
+  try {
+    const sales = await getDailySales(eventId, dayKey, mode === "seller" ? sellerId : null);
+    const names = mode === "seller" ? {} : await getDailySellerNames(eventId);
+
+    const confirmed = sales.filter(s=>s.status==="CONFIRMADA");
+    const cancelled = sales.filter(s=>s.status==="CANCELADA");
+    const total = confirmed.reduce((sum,s)=>sum+(Number(s.total)||0),0);
+
+    const sellerTotals = {};
+    const paymentTotals = {};
+    const productTotals = {};
+
+    confirmed.forEach(s => {
+      const seller = names[s.seller_id] || "Garçom";
+      sellerTotals[seller] = (sellerTotals[seller]||0) + (Number(s.total)||0);
+
+      (s.payments||[]).forEach(p => {
+        paymentTotals[p.method] = (paymentTotals[p.method]||0) + (Number(p.amount)||0);
+      });
+
+      (s.sale_items||[]).forEach(i => {
+        const product = i.products?.name || "Produto";
+        productTotals[product] = (productTotals[product]||0) + (Number(i.quantity)||0);
       });
     });
-  }
 
-  const installBtn = document.getElementById("installAppBtn");
-
-  window.addEventListener("beforeinstallprompt", (event) => {
-    event.preventDefault();
-    deferredInstallPrompt = event;
-    if (installBtn) installBtn.classList.remove("hidden");
-  });
-
-  window.addEventListener("appinstalled", () => {
-    deferredInstallPrompt = null;
-    if (installBtn) installBtn.classList.add("hidden");
-  });
-
-  if (installBtn) {
-    installBtn.addEventListener("click", async () => {
-      if (!deferredInstallPrompt) {
-        alert("A instalação ainda não está disponível neste navegador. Use o menu do Chrome e procure por “Instalar aplicativo” ou “Adicionar à tela inicial”.");
-        return;
-      }
-      deferredInstallPrompt.prompt();
-      const result = await deferredInstallPrompt.userChoice;
-      if (result.outcome === "accepted") {
-        installBtn.classList.add("hidden");
-      }
-      deferredInstallPrompt = null;
-    });
+    c.innerHTML = `
+      <div class="card">
+        <h3>📅 Relatório diário: ${formatDayBR(dayKey)}</h3>
+        <div class="grid">
+          <div><strong>${formatBRL(total)}</strong><br><small>Faturamento do dia</small></div>
+          <div><strong>${confirmed.length}</strong><br><small>Vendas confirmadas</small></div>
+          <div><strong>${cancelled.length}</strong><br><small>Canceladas</small></div>
+          <div><strong>${confirmed.length ? formatBRL(total/confirmed.length) : formatBRL(0)}</strong><br><small>Ticket médio</small></div>
+        </div>
+        ${mode === "seller" ? "" : `
+        <h4>👥 Vendas por garçom</h4>
+        ${Object.entries(sellerTotals).map(([n,v])=>`<div>${n}: <strong>${formatBRL(v)}</strong></div>`).join("") || "<div>Nenhuma venda.</div>"}
+        <h4>💳 Pagamentos</h4>
+        ${Object.entries(paymentTotals).map(([n,v])=>`<div>${n}: <strong>${formatBRL(v)}</strong></div>`).join("") || "<div>Nenhum pagamento.</div>"}
+        <h4>🍺 Produtos vendidos</h4>
+        ${Object.entries(productTotals).map(([n,v])=>`<div>${n}: <strong>${v} unidade(s)</strong></div>`).join("") || "<div>Nenhum produto.</div>"}
+        `}
+        <h4>🧾 Vendas do dia</h4>
+        ${renderDailySalesList(sales, names)}
+      </div>`;
+  } catch (err) {
+    console.error(err);
+    c.innerHTML = `<div class="card"><strong>Não foi possível carregar o relatório diário.</strong><br>${err.message || err}</div>`;
   }
 }
 
-setupPWA();
+async function loadDailyReportControls(eventId, mode="admin", sellerId=null) {
+  const c = document.getElementById("dailyReportControls");
+  if (!c || !eventId) return;
+
+  const {data:sales,error} = await supabaseClient
+    .from("sales").select("created_at")
+    .eq("event_id",eventId)
+    .order("created_at",{ascending:true});
+  if (error) {
+    c.innerHTML = `<div class="card">${error.message}</div>`;
+    return;
+  }
+
+  const days = [...new Set((sales||[]).map(s=>localDateKey(s.created_at)))].filter(Boolean);
+  const today = localDateKey(new Date().toISOString());
+  if (!days.includes(today) && mode !== "seller") days.push(today);
+  days.sort();
+
+  c.innerHTML = `
+    <div class="card">
+      <h3>📅 Consulta por dia</h3>
+      <label>Data
+        <select id="dailyReportDate">
+          ${days.map(d=>`<option value="${d}" ${d===today?"selected":""}>${formatDayBR(d)}</option>`).join("")}
+        </select>
+      </label>
+    </div>`;
+
+  const sel = document.getElementById("dailyReportDate");
+  const refresh = () => openDailyReport(eventId, sel.value, mode, sellerId);
+  sel?.addEventListener("change", refresh);
+  if (sel?.value) refresh();
+}
+
+
+// ===== CONTROLE DE OPERAÇÃO DO EVENTO =====
+async function loadEventOperationsControls(eventId) {
+  const c = document.getElementById("eventOperationsControls");
+  if (!c || !eventId) return;
+  const {data: hours} = await supabaseClient.from("event_operating_hours")
+    .select("start_time,end_time,active").eq("event_id", eventId).maybeSingle();
+  const {data: ev} = await supabaseClient.from("events")
+    .select("id,name,status").eq("id", eventId).maybeSingle();
+  if (!ev) return;
+  const closed = ev.status === "FECHADO";
+  c.innerHTML = `
+    <div class="card">
+      <h3>⏰ Operação do evento</h3>
+      <p class="muted">Defina quando as vendas estarão liberadas.</p>
+      <div class="grid">
+        <label>Início<input id="eventStartTime" type="time" value="${hours?.start_time?.slice(0,5)||""}"></label>
+        <label>Fim<input id="eventEndTime" type="time" value="${hours?.end_time?.slice(0,5)||""}"></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <input id="eventHoursActive" type="checkbox" ${hours?.active !== false ? "checked":""}> Horário ativo
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+        <button id="saveEventHoursBtn" class="primary" ${closed?"disabled":""}>💾 Salvar horário</button>
+        <button id="closeEventDayBtn" class="secondary" ${closed?"disabled":""}>📊 Fechar relatório do dia</button>
+        <button id="closeEventBtn" class="danger" ${closed?"disabled":""}>🔒 Fechar evento</button>
+        ${closed?'<button id="deleteFinishedEventBtn" class="danger">🗑️ Excluir evento definitivamente</button>':""}
+      </div>
+    </div>`;
+  document.getElementById("saveEventHoursBtn")?.addEventListener("click", saveEventOperationsHours);
+  document.getElementById("closeEventDayBtn")?.addEventListener("click", closeEventDayFromApp);
+  document.getElementById("closeEventBtn")?.addEventListener("click", closeEventFromApp);
+  document.getElementById("deleteFinishedEventBtn")?.addEventListener("click", deleteFinishedEventFromApp);
+}
+async function saveEventOperationsHours() {
+  const id=window.currentAdminEventId, start=document.getElementById("eventStartTime")?.value, end=document.getElementById("eventEndTime")?.value;
+  const active=document.getElementById("eventHoursActive")?.checked ?? true;
+  if(!id) return alert("Selecione um evento.");
+  if(!start||!end) return alert("Informe início e término.");
+  const {error}=await supabaseClient.from("event_operating_hours").upsert(
+    {event_id:id,start_time:start,end_time:end,active,updated_at:new Date().toISOString()},
+    {onConflict:"event_id"});
+  if(error) return alert(error.message);
+  alert("Horário salvo com sucesso.");
+}
+async function closeEventDayFromApp() {
+  const id=window.currentAdminEventId;
+  if(!id) return alert("Selecione um evento.");
+  const date=new Date().toISOString().slice(0,10);
+  if(!confirm(`Fechar o relatório do dia ${date}?\n\nAs vendas realizadas serão preservadas.`)) return;
+  const {error}=await supabaseClient.rpc("close_event_day",{p_event_id:id,p_closure_date:date});
+  if(error) return alert(error.message);
+  alert("Relatório diário fechado com sucesso.");
+}
+async function closeEventFromApp() {
+  const id=window.currentAdminEventId;
+  if(!id) return alert("Selecione um evento.");
+  if(!confirm("⚠️ Fechar este evento impedirá novas vendas e movimentações.\n\nDeseja continuar?")) return;
+  const {error}=await supabaseClient.rpc("close_event",{p_event_id:id});
+  if(error) return alert(error.message);
+  alert("Evento fechado com sucesso.");
+  await loadEventOperationsControls(id);
+}
+async function deleteFinishedEventFromApp() {
+  const id=window.currentAdminEventId;
+  if(!id) return alert("Selecione um evento.");
+  if(!confirm("🗑️ EXCLUSÃO DEFINITIVA\n\nSerão removidos vendas, pagamentos, estoque, movimentações e vínculos deste evento.\n\nProdutos e usuários NÃO serão apagados.\n\nContinuar?")) return;
+  if(prompt("Digite EXCLUIR para confirmar:")!=="EXCLUIR") return alert("Exclusão cancelada.");
+  const {error}=await supabaseClient.rpc("delete_finished_event",{p_event_id:id});
+  if(error) return alert(error.message);
+  alert("Evento excluído definitivamente.");
+  location.reload();
+}
 
 const cfg = window.SUPABASE_CONFIG;
 
@@ -1934,3 +2121,14 @@ async function loadOrganizationEventData(){
 }
 
 init();
+
+document.addEventListener("change", (e) => {
+  const el=e.target;
+  if(!(el instanceof HTMLSelectElement) || !el.value) return;
+  const looks = (el.id||"").toLowerCase().includes("event") ||
+    Array.from(el.options||[]).some(o=>/ABERTO|FECHADO/.test(o.textContent||""));
+  if(looks) {
+    window.currentAdminEventId=el.value;
+    if(typeof loadEventOperationsControls==="function") loadEventOperationsControls(el.value);
+  }
+});

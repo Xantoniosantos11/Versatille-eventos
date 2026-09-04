@@ -10,7 +10,9 @@
   <title>Versatille Eventos</title>
   <link rel="stylesheet" href="style.css?v=8">
 </head>
-<body>
+<body><div id="eventOperationsControls"></div>
+<div id="dailyReportControls"></div>
+<div id="dailyReportArea"></div>
   <main id="app">
     <section id="setupScreen" class="screen hidden">
       <div class="card login-card">
@@ -51,7 +53,7 @@
           <div class="brand small">VERSATILLE <span>EVENTOS</span></div>
           <div id="userInfo" class="muted"></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center"><button id="installAppBtn" class="ghost hidden" type="button">📲 Instalar</button><button id="logoutBtn" class="ghost">Sair</button></div>
+        <button id="logoutBtn" class="ghost">Sair</button>
       </header>
 
       <div class="content">
@@ -100,6 +102,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>
