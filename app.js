@@ -1463,13 +1463,18 @@ async function loadOrganizationEventData(){
 
   const sellersPromise = supabaseClient
     .from("event_sellers")
-    .select("user_id,active,profiles(full_name)")
+    .select("user_id,active")
     .eq("event_id", eventId);
 
   const [eventR, salesR, stockR, movementsR, sellersR] =
     await Promise.all([eventPromise,salesPromise,stockPromise,movementsPromise,sellersPromise]);
 
-  const firstError = [eventR,salesR,stockR,movementsR,sellersR].find(r => r.error);
+  const sellerIds = (sellersR.data || []).map(s => s.user_id).filter(Boolean);
+  const profilesR = sellerIds.length
+    ? await supabaseClient.from("profiles").select("id,full_name").in("id", sellerIds)
+    : { data: [], error: null };
+
+  const firstError = [eventR,salesR,stockR,movementsR,sellersR,profilesR].find(r => r.error);
   if(firstError){
     list.innerHTML =
       `<div class="card error">Não foi possível carregar o painel: ${escapeHtml(firstError.error.message)}</div>`;
@@ -1481,10 +1486,16 @@ async function loadOrganizationEventData(){
   const stock = stockR.data || [];
   const movements = movementsR.data || [];
   const sellers = sellersR.data || [];
+  const profiles = profilesR.data || [];
 
   const sellerNames = {};
+  profiles.forEach(p => {
+    sellerNames[p.id] = p.full_name || `Garçom ${String(p.id || "").slice(0,8)}`;
+  });
   sellers.forEach(s => {
-    sellerNames[s.user_id] = s.profiles?.full_name || `Garçom ${String(s.user_id || "").slice(0,8)}`;
+    if (!sellerNames[s.user_id]) {
+      sellerNames[s.user_id] = `Garçom ${String(s.user_id || "").slice(0,8)}`;
+    }
   });
 
   const confirmed = sales.filter(s => s.status !== "CANCELADA");
