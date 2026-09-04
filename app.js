@@ -1,3 +1,47 @@
+
+// ===== PWA / INSTALAÇÃO =====
+let deferredInstallPrompt = null;
+
+function setupPWA() {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./service-worker.js?v=12").catch(err => {
+        console.warn("Service Worker não registrado:", err);
+      });
+    });
+  }
+
+  const installBtn = document.getElementById("installAppBtn");
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    if (installBtn) installBtn.classList.remove("hidden");
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    if (installBtn) installBtn.classList.add("hidden");
+  });
+
+  if (installBtn) {
+    installBtn.addEventListener("click", async () => {
+      if (!deferredInstallPrompt) {
+        alert("A instalação ainda não está disponível neste navegador. Use o menu do Chrome e procure por “Instalar aplicativo” ou “Adicionar à tela inicial”.");
+        return;
+      }
+      deferredInstallPrompt.prompt();
+      const result = await deferredInstallPrompt.userChoice;
+      if (result.outcome === "accepted") {
+        installBtn.classList.add("hidden");
+      }
+      deferredInstallPrompt = null;
+    });
+  }
+}
+
+setupPWA();
+
 const cfg = window.SUPABASE_CONFIG;
 
 const setupScreen = document.getElementById("setupScreen");
