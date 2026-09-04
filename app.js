@@ -1528,15 +1528,23 @@ async function loadEventReport(){
     const current=Number(s.current_quantity||0);
     const minimum=Number(s.minimum_quantity||0);
     const productName=s.products?.name||"Produto";
-    const sold=movements.filter(m=>m.product_id===s.product_id&&m.movement_type==="VENDA").reduce((a,m)=>a+Number(m.quantity||0),0);
-    const loss=movements.filter(m=>m.product_id===s.product_id&&["PERDA","QUEBRA","CONSUMO_INTERNO"].includes(m.movement_type)).reduce((a,m)=>a+Number(m.quantity||0),0);
-    const entries=movements.filter(m=>m.product_id===s.product_id&&m.movement_type==="ENTRADA").reduce((a,m)=>a+Number(m.quantity||0),0);
-    const expected=initial+entries-sold-loss;
+    const productMovements=movements.filter(m=>m.product_id===s.product_id);
+    const sold=productMovements.filter(m=>m.movement_type==="VENDA").reduce((a,m)=>a+Number(m.quantity||0),0);
+    const loss=productMovements.filter(m=>["PERDA","QUEBRA","CONSUMO_INTERNO"].includes(m.movement_type)).reduce((a,m)=>a+Number(m.quantity||0),0);
+    const entryMovements=productMovements.filter(m=>m.movement_type==="ENTRADA").slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+    // O primeiro ENTRADA normalmente é o carregamento inicial que já está
+    // contabilizado em event_stock.initial_quantity. Não podemos somá-lo duas vezes.
+    let initializationEntryIndex=-1;
+    if(initial>0 && entryMovements.length && Number(entryMovements[0].quantity||0)===initial){
+      initializationEntryIndex=0;
+    }
+    const additionalEntries=entryMovements.reduce((a,m,i)=>a+(i===initializationEntryIndex?0:Number(m.quantity||0)),0);
+    const expected=initial+additionalEntries-sold-loss;
     const adjustment=current-expected;
     return `<div style="padding:12px 0;border-bottom:1px solid var(--line)">
       <div style="display:flex;justify-content:space-between;gap:12px"><strong>${escapeHtml(productName)}${current<=minimum?" ⚠️":""}</strong><strong>${current} un.</strong></div>
-      <div class="muted">Inicial: ${initial} • Entradas: +${entries} • Vendidas: -${sold} • Perdas/quebras/consumo: -${loss}</div>
-      <div class="muted">Saldo calculado: ${expected} • Ajuste líquido: ${adjustment>=0?"+":""}${adjustment}</div>
+      <div class="muted">Inicial: ${initial} • Entradas adicionais: +${additionalEntries} • Vendidas: -${sold} • Perdas/quebras/consumo: -${loss}</div>
+      <div class="muted">Saldo calculado: ${expected} • Diferença para o estoque atual: ${adjustment>=0?"+":""}${adjustment}</div>
     </div>`;
   }).join("");
 
