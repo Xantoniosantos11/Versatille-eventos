@@ -1,161 +1,4 @@
 
-// ===== RELATÓRIO DIÁRIO: ADM / ORGANIZAÇÃO / GARÇOM =====
-function localDateKey(value) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,"0");
-  const day = String(d.getDate()).padStart(2,"0");
-  return `${y}-${m}-${day}`;
-}
-
-function formatDayBR(key) {
-  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return key || "";
-  const [y,m,d] = key.split("-");
-  return `${d}/${m}/${y}`;
-}
-
-function dayRangeUTCFromLocalDate(key) {
-  const [y,m,d] = key.split("-").map(Number);
-  const start = new Date(y, m-1, d, 0, 0, 0, 0);
-  const end = new Date(y, m-1, d+1, 0, 0, 0, 0);
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
-async function getDailySales(eventId, dayKey, sellerOnlyId = null) {
-  const range = dayRangeUTCFromLocalDate(dayKey);
-  let q = supabaseClient
-    .from("sales")
-    .select(`
-      id,event_id,seller_id,total,status,created_at,cancelled_at,
-      sale_items(quantity,unit_price,products(name)),
-      payments(method,amount)
-    `)
-    .eq("event_id", eventId)
-    .gte("created_at", range.start)
-    .lt("created_at", range.end)
-    .order("created_at", {ascending:false});
-
-  if (sellerOnlyId) q = q.eq("seller_id", sellerOnlyId);
-
-  const {data,error} = await q;
-  if (error) throw error;
-  return data || [];
-}
-
-async function getDailySellerNames(eventId) {
-  const {data,error} = await supabaseClient.rpc("get_event_seller_names", {p_event_id:eventId});
-  if (error) throw error;
-  return Object.fromEntries((data||[]).map(x => [x.user_id, x.full_name || "Garçom"]));
-}
-
-function renderDailySalesList(sales, sellerNames={}) {
-  if (!sales.length) return '<div class="empty-state">Nenhuma venda encontrada neste dia.</div>';
-  return sales.map(s => {
-    const name = sellerNames[s.seller_id] || "Garçom";
-    const dt = new Date(s.created_at);
-    const when = dt.toLocaleString("pt-BR");
-    const status = s.status === "CANCELADA" ? "❌ CANCELADA" : "✅ CONFIRMADA";
-    return `<div class="card" style="margin-bottom:8px">
-      <strong>${name}</strong>
-      <div>${when}</div>
-      <div>${status}</div>
-      <strong>${formatBRL(Number(s.total)||0)}</strong>
-    </div>`;
-  }).join("");
-}
-
-async function openDailyReport(eventId, dayKey, mode="admin", sellerId=null) {
-  const c = document.getElementById("dailyReportArea");
-  if (!c) return;
-
-  try {
-    const sales = await getDailySales(eventId, dayKey, mode === "seller" ? sellerId : null);
-    const names = mode === "seller" ? {} : await getDailySellerNames(eventId);
-
-    const confirmed = sales.filter(s=>s.status==="CONFIRMADA");
-    const cancelled = sales.filter(s=>s.status==="CANCELADA");
-    const total = confirmed.reduce((sum,s)=>sum+(Number(s.total)||0),0);
-
-    const sellerTotals = {};
-    const paymentTotals = {};
-    const productTotals = {};
-
-    confirmed.forEach(s => {
-      const seller = names[s.seller_id] || "Garçom";
-      sellerTotals[seller] = (sellerTotals[seller]||0) + (Number(s.total)||0);
-
-      (s.payments||[]).forEach(p => {
-        paymentTotals[p.method] = (paymentTotals[p.method]||0) + (Number(p.amount)||0);
-      });
-
-      (s.sale_items||[]).forEach(i => {
-        const product = i.products?.name || "Produto";
-        productTotals[product] = (productTotals[product]||0) + (Number(i.quantity)||0);
-      });
-    });
-
-    c.innerHTML = `
-      <div class="card">
-        <h3>📅 Relatório diário: ${formatDayBR(dayKey)}</h3>
-        <div class="grid">
-          <div><strong>${formatBRL(total)}</strong><br><small>Faturamento do dia</small></div>
-          <div><strong>${confirmed.length}</strong><br><small>Vendas confirmadas</small></div>
-          <div><strong>${cancelled.length}</strong><br><small>Canceladas</small></div>
-          <div><strong>${confirmed.length ? formatBRL(total/confirmed.length) : formatBRL(0)}</strong><br><small>Ticket médio</small></div>
-        </div>
-        ${mode === "seller" ? "" : `
-        <h4>👥 Vendas por garçom</h4>
-        ${Object.entries(sellerTotals).map(([n,v])=>`<div>${n}: <strong>${formatBRL(v)}</strong></div>`).join("") || "<div>Nenhuma venda.</div>"}
-        <h4>💳 Pagamentos</h4>
-        ${Object.entries(paymentTotals).map(([n,v])=>`<div>${n}: <strong>${formatBRL(v)}</strong></div>`).join("") || "<div>Nenhum pagamento.</div>"}
-        <h4>🍺 Produtos vendidos</h4>
-        ${Object.entries(productTotals).map(([n,v])=>`<div>${n}: <strong>${v} unidade(s)</strong></div>`).join("") || "<div>Nenhum produto.</div>"}
-        `}
-        <h4>🧾 Vendas do dia</h4>
-        ${renderDailySalesList(sales, names)}
-      </div>`;
-  } catch (err) {
-    console.error(err);
-    c.innerHTML = `<div class="card"><strong>Não foi possível carregar o relatório diário.</strong><br>${err.message || err}</div>`;
-  }
-}
-
-async function loadDailyReportControls(eventId, mode="admin", sellerId=null) {
-  const c = document.getElementById("dailyReportControls");
-  if (!c || !eventId) return;
-
-  const {data:sales,error} = await supabaseClient
-    .from("sales").select("created_at")
-    .eq("event_id",eventId)
-    .order("created_at",{ascending:true});
-  if (error) {
-    c.innerHTML = `<div class="card">${error.message}</div>`;
-    return;
-  }
-
-  const days = [...new Set((sales||[]).map(s=>localDateKey(s.created_at)))].filter(Boolean);
-  const today = localDateKey(new Date().toISOString());
-  if (!days.includes(today) && mode !== "seller") days.push(today);
-  days.sort();
-
-  c.innerHTML = `
-    <div class="card">
-      <h3>📅 Consulta por dia</h3>
-      <label>Data
-        <select id="dailyReportDate">
-          ${days.map(d=>`<option value="${d}" ${d===today?"selected":""}>${formatDayBR(d)}</option>`).join("")}
-        </select>
-      </label>
-    </div>`;
-
-  const sel = document.getElementById("dailyReportDate");
-  const refresh = () => openDailyReport(eventId, sel.value, mode, sellerId);
-  sel?.addEventListener("change", refresh);
-  if (sel?.value) refresh();
-}
-
-
 // ===== CONTROLE DE OPERAÇÃO DO EVENTO =====
 async function loadEventOperationsControls(eventId) {
   const c = document.getElementById("eventOperationsControls");
@@ -1496,6 +1339,8 @@ async function openMySales(){
         <p class="muted">Consulta somente leitura das vendas registradas pelo seu usuário. Nenhuma alteração ou cancelamento é permitido.</p>
       </div>
     </div>
+    <div id="mySalesDailyControls"></div>
+    <div id="mySalesDailyArea"></div>
     <div id="mySalesList" class="list">
       <div class="card muted">Carregando vendas...</div>
     </div>
@@ -1516,6 +1361,18 @@ async function loadMySales(){
   if(!user){
     list.innerHTML = `<div class="card error">Sessão expirada.</div>`;
     return;
+  }
+
+  // Consulta diária separada, sem somar dias diferentes.
+  const {data: sellerEvents} = await supabaseClient
+    .from("event_sellers")
+    .select("event_id,events(id,name,status)")
+    .eq("user_id", user.id)
+    .eq("active", true);
+
+  if(sellerEvents?.length) {
+    const eventId = sellerEvents[0].event_id;
+    setupDailyReport(eventId,"mySalesDailyControls",user.id,true);
   }
 
   const { data, error } = await supabaseClient
@@ -1620,6 +1477,8 @@ async function openReports(){
       <p id="reportStatus" class="muted" style="margin-bottom:0"></p>
     </div>
 
+    <div id="reportDailyControls"></div>
+    <div id="reportDailyArea"></div>
     <div id="reportArea">
       <div class="card muted">Selecione um evento para gerar o relatório.</div>
     </div>
@@ -1700,6 +1559,9 @@ async function loadEventReport(){
   }
 
   const event=eventR.data;
+  window.currentAdminEventId=eventId;
+  loadEventOperationsControls(eventId);
+  setupDailyReport(eventId,"reportDailyControls",null,false);
   const sales=salesR.data||[];
   const stock=stockR.data||[];
   const movements=movementsR.data||[];
@@ -2120,15 +1982,140 @@ async function loadOrganizationEventData(){
   `;
 }
 
+
+// ===== RELATÓRIO DIÁRIO INTEGRADO =====
+function dailyDateKeyFromLocalDate(d) {
+  const x = d instanceof Date ? d : new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
+}
+function dailyBRDate(key) {
+  const [y,m,d] = String(key||"").split("-");
+  return y && m && d ? `${d}/${m}/${y}` : key || "";
+}
+function dailyLocalRange(key) {
+  const [y,m,d] = key.split("-").map(Number);
+  return {
+    start: new Date(y,m-1,d,0,0,0,0).toISOString(),
+    end: new Date(y,m-1,d+1,0,0,0,0).toISOString()
+  };
+}
+function dailyMethodLabel(v) {
+  return ({PIX:"PIX",DINHEIRO:"Dinheiro",DEBITO:"Débito",CREDITO:"Crédito"})[v] || v || "Outro";
+}
+async function dailyLoad(eventId, dayKey, sellerId=null) {
+  const r = dailyLocalRange(dayKey);
+  let q = supabaseClient.from("sales")
+    .select("id,seller_id,total,status,created_at,sale_items(quantity,unit_price,products(name)),payments(method,amount)")
+    .eq("event_id",eventId).gte("created_at",r.start).lt("created_at",r.end)
+    .order("created_at",{ascending:false}).limit(5000);
+  if(sellerId) q=q.eq("seller_id",sellerId);
+  const [salesR,movR] = await Promise.all([
+    q,
+    supabaseClient.from("stock_movements")
+      .select("movement_type,quantity,created_at,products(name)")
+      .eq("event_id",eventId).gte("created_at",r.start).lt("created_at",r.end)
+      .order("created_at",{ascending:false}).limit(5000)
+  ]);
+  if(salesR.error) throw salesR.error;
+  if(movR.error) throw movR.error;
+  return {sales:salesR.data||[], movements:movR.data||[]};
+}
+function dailyRender(data, names, sellerMode) {
+  const sales=data.sales, movements=data.movements;
+  const confirmed=sales.filter(s=>s.status==="CONFIRMADA");
+  const cancelled=sales.filter(s=>s.status==="CANCELADA");
+  const revenue=confirmed.reduce((a,s)=>a+Number(s.total||0),0);
+  const payments={}, products={}, sellers={};
+  confirmed.forEach(s=>{
+    const name=names[s.seller_id]||"Garçom";
+    sellers[name]=(sellers[name]||0)+Number(s.total||0);
+    (s.payments||[]).forEach(p=>payments[p.method]=(payments[p.method]||0)+Number(p.amount||0));
+    (s.sale_items||[]).forEach(i=>{
+      const n=i.products?.name||"Produto";
+      products[n]=(products[n]||0)+Number(i.quantity||0);
+    });
+  });
+  const movTotals={};
+  movements.forEach(m=>movTotals[m.movement_type]=(movTotals[m.movement_type]||0)+Number(m.quantity||0));
+  const esc = s => escapeHtml(String(s));
+  const list = sales.length ? sales.map(s=>`
+    <div class="card" style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;gap:10px">
+        <strong>${esc(new Date(s.created_at).toLocaleString("pt-BR"))}</strong>
+        <strong>${formatMoney(Number(s.total)||0)}</strong>
+      </div>
+      <div class="muted">${esc(names[s.seller_id]||"Garçom")} • ${esc(s.status||"CONFIRMADA")}</div>
+    </div>`).join("") : '<div class="muted">Nenhuma venda neste dia.</div>';
+
+  const rows=(obj, money=false)=>Object.entries(obj).map(([k,v])=>
+    `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)">
+      <span>${esc(k)}</span><strong>${money?formatMoney(v):v}</strong>
+    </div>`).join("") || '<div class="muted">Nenhum dado.</div>';
+
+  return `
+    <div class="card">
+      <div class="eyebrow">FECHAMENTO DIÁRIO</div>
+      <h2>${formatMoney(revenue)}</h2>
+      <div class="muted">Faturamento do dia</div>
+      <div class="grid" style="margin-top:12px">
+        <div><strong>${confirmed.length}</strong><br><small>Confirmadas</small></div>
+        <div><strong>${cancelled.length}</strong><br><small>Canceladas</small></div>
+        <div><strong>${confirmed.length?formatMoney(revenue/confirmed.length):formatMoney(0)}</strong><br><small>Ticket médio</small></div>
+      </div>
+    </div>
+    ${sellerMode ? "" : `<div class="card"><div class="eyebrow">VENDAS POR GARÇOM</div>${rows(sellers,true)}</div>
+    <div class="card"><div class="eyebrow">PAGAMENTOS DO DIA</div>${rows(Object.fromEntries(Object.entries(payments).map(([k,v])=>[dailyMethodLabel(k),v])),true)}</div>
+    <div class="card"><div class="eyebrow">PRODUTOS DO DIA</div>${rows(products,false)}</div>
+    <div class="card"><div class="eyebrow">MOVIMENTAÇÕES DO DIA</div>${rows(Object.fromEntries(Object.entries(movTotals).map(([k,v])=>[reportMovementLabel(k),v])),false)}</div>`}
+    <div class="card"><div class="eyebrow">VENDAS DO DIA • DATA E HORA</div>${list}</div>`;
+}
+async function dailyAvailableDays(eventId, sellerId=null) {
+  let q=supabaseClient.from("sales").select("created_at").eq("event_id",eventId).order("created_at",{ascending:true}).limit(5000);
+  if(sellerId) q=q.eq("seller_id",sellerId);
+  const {data,error}=await q;
+  if(error) throw error;
+  return [...new Set((data||[]).map(x=>dailyDateKeyFromLocalDate(x.created_at)))].sort();
+}
+async function setupDailyReport(eventId, targetId, sellerId=null, sellerMode=false) {
+  const target=document.getElementById(targetId);
+  if(!target) return;
+  try {
+    const days=await dailyAvailableDays(eventId,sellerId);
+    const today=dailyDateKeyFromLocalDate(new Date());
+    if(!days.includes(today)) days.push(today);
+    days.sort();
+    target.innerHTML=`
+      <div class="card">
+        <div class="eyebrow">CONSULTA POR DIA</div>
+        <label>Data
+          <select id="${targetId}Date" class="select">
+            ${days.map(d=>`<option value="${d}" ${d===today?"selected":""}>${dailyBRDate(d)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div id="${targetId}Content"></div>`;
+    const sel=document.getElementById(targetId+"Date");
+    const render=async()=>{
+      const out=document.getElementById(targetId+"Content");
+      out.innerHTML='<div class="card muted">Carregando dia...</div>';
+      try{
+        const [data,nr]=await Promise.all([
+          dailyLoad(eventId,sel.value,sellerId),
+          sellerMode ? Promise.resolve({data:[]}) : supabaseClient.rpc("get_event_seller_names",{p_event_id:eventId})
+        ]);
+        const names={};
+        (nr.data||[]).forEach(x=>names[x.user_id]=x.full_name||"Garçom");
+        if(sellerMode && sellerId) names[sellerId]="Minhas vendas";
+        out.innerHTML=dailyRender(data,names,sellerMode);
+      }catch(err){out.innerHTML=`<div class="card error">${escapeHtml(err.message||String(err))}</div>`;}
+    };
+    sel.addEventListener("change",render);
+    await render();
+  } catch(err) {
+    target.innerHTML=`<div class="card error">${escapeHtml(err.message||String(err))}</div>`;
+  }
+}
+
 init();
 
-document.addEventListener("change", (e) => {
-  const el=e.target;
-  if(!(el instanceof HTMLSelectElement) || !el.value) return;
-  const looks = (el.id||"").toLowerCase().includes("event") ||
-    Array.from(el.options||[]).some(o=>/ABERTO|FECHADO/.test(o.textContent||""));
-  if(looks) {
-    window.currentAdminEventId=el.value;
-    if(typeof loadEventOperationsControls==="function") loadEventOperationsControls(el.value);
-  }
-});
+
