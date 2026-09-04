@@ -1089,14 +1089,27 @@ async function openNewSale(){
         <strong id="saleTotal" style="font-size:22px;color:var(--accent)">R$ 0,00</strong>
       </div>
 
-      <label>Forma de pagamento
-        <select id="salePayment" class="select">
-          <option value="PIX">PIX</option>
-          <option value="DINHEIRO">Dinheiro</option>
-          <option value="DEBITO">Débito</option>
-          <option value="CREDITO">Crédito</option>
-        </select>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <input id="splitPaymentToggle" type="checkbox">
+        💳 Dividir pagamento entre vários clientes
       </label>
+
+      <div id="singlePaymentArea">
+        <label>Forma de pagamento
+          <select id="salePayment" class="select">
+            <option value="PIX">PIX</option>
+            <option value="DINHEIRO">Dinheiro</option>
+            <option value="DEBITO">Débito</option>
+            <option value="CREDITO">Crédito</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="splitPaymentArea" class="hidden" style="margin-top:12px">
+        <div id="splitPaymentsList"></div>
+        <button id="addSplitPaymentBtn" class="ghost compact" type="button">+ Adicionar pagamento</button>
+        <div id="splitPaymentSummary" class="card" style="margin-top:10px;padding:10px"></div>
+      </div>
 
       <button id="confirmSale" class="primary" type="button">Confirmar venda</button>
       <p id="saleSubmitError" class="error"></p>
@@ -1111,7 +1124,11 @@ async function openNewSale(){
   document.getElementById("addSaleItem").onclick = addItemToSale;
   document.getElementById("confirmSale").onclick = confirmSale;
 
-  saleState = { event: null, products: [], cart: [] };
+  document.getElementById("splitPaymentToggle").addEventListener("change", toggleSplitPaymentUI);
+  document.getElementById("addSplitPaymentBtn").addEventListener("click", addSplitPaymentRow);
+
+  saleState = { event: null, products: [], cart: [], splitPayments: [] };
+  renderSplitPayments();
 
   const eventResult = await getSellerEvent();
   if(eventResult.error){
@@ -1265,6 +1282,84 @@ function renderSaleCart(){
   });
 }
 
+function getSaleTotal() {
+  return saleState.cart.reduce((sum,item) => sum + (item.quantity * item.price), 0);
+}
+
+function toggleSplitPaymentUI() {
+  const split=!!document.getElementById("splitPaymentToggle")?.checked;
+  document.getElementById("singlePaymentArea")?.classList.toggle("hidden", split);
+  document.getElementById("splitPaymentArea")?.classList.toggle("hidden", !split);
+  if(split && !saleState.splitPayments.length) addSplitPaymentRow();
+  renderSplitPayments();
+}
+
+function addSplitPaymentRow() {
+  saleState.splitPayments.push({method:"PIX",amount:""});
+  renderSplitPayments();
+}
+
+function removeSplitPaymentRow(index) {
+  saleState.splitPayments.splice(index,1);
+  renderSplitPayments();
+}
+
+function renderSplitPayments() {
+  const list=document.getElementById("splitPaymentsList");
+  const summary=document.getElementById("splitPaymentSummary");
+  if(!list || !summary) return;
+
+  list.innerHTML=saleState.splitPayments.map((p,i)=>`
+    <div class="card" style="margin:8px 0;padding:10px">
+      <div class="grid">
+        <label>Forma
+          <select data-split-method="${i}" class="select">
+            <option value="PIX" ${p.method==="PIX"?"selected":""}>PIX</option>
+            <option value="DINHEIRO" ${p.method==="DINHEIRO"?"selected":""}>Dinheiro</option>
+            <option value="DEBITO" ${p.method==="DEBITO"?"selected":""}>Débito</option>
+            <option value="CREDITO" ${p.method==="CREDITO"?"selected":""}>Crédito</option>
+          </select>
+        </label>
+        <label>Valor
+          <input data-split-amount="${i}" type="number" min="0" step="0.01" inputmode="decimal"
+                 value="${escapeHtml(String(p.amount||""))}" placeholder="0,00">
+        </label>
+      </div>
+      <button type="button" class="ghost small-btn" data-split-remove="${i}">Remover</button>
+    </div>
+  `).join("") || '<div class="muted">Adicione um pagamento.</div>';
+
+  list.querySelectorAll("[data-split-method]").forEach(el=>{
+    el.addEventListener("change",()=>{
+      saleState.splitPayments[Number(el.dataset.splitMethod)].method=el.value;
+      renderSplitPayments();
+    });
+  });
+  list.querySelectorAll("[data-split-amount]").forEach(el=>{
+    el.addEventListener("input",()=>{
+      saleState.splitPayments[Number(el.dataset.splitAmount)].amount=el.value;
+      renderSplitPaymentSummary();
+    });
+  });
+  list.querySelectorAll("[data-split-remove]").forEach(el=>{
+    el.addEventListener("click",()=>removeSplitPaymentRow(Number(el.dataset.splitRemove)));
+  });
+  renderSplitPaymentSummary();
+}
+
+function renderSplitPaymentSummary() {
+  const summary=document.getElementById("splitPaymentSummary");
+  if(!summary) return;
+  const total=getSaleTotal();
+  const received=saleState.splitPayments.reduce((a,p)=>a+Number(String(p.amount).replace(",",".")||0),0);
+  const diff=Number((total-received).toFixed(2));
+  let text;
+  if(Math.abs(diff)<0.005) text=`<strong>Recebido: ${formatMoney(received)}</strong><br>✅ Pagamento completo`;
+  else if(diff>0) text=`<strong>Recebido: ${formatMoney(received)}</strong><br>⚠️ Falta ${formatMoney(diff)}`;
+  else text=`<strong>Recebido: ${formatMoney(received)}</strong><br>⚠️ Excedente de ${formatMoney(Math.abs(diff))}`;
+  summary.innerHTML=`<div>Venda: <strong>${formatMoney(total)}</strong></div>${text}`;
+}
+
 async function confirmSale(){
   const error = document.getElementById("saleSubmitError");
   error.textContent = "";
@@ -1279,7 +1374,28 @@ async function confirmSale(){
     return;
   }
 
-  const paymentMethod = document.getElementById("salePayment").value;
+  const split=!!document.getElementById("splitPaymentToggle")?.checked;
+  const total=getSaleTotal();
+  let payments;
+
+  if(split){
+    payments=saleState.splitPayments
+      .map(p=>({method:p.method,amount:Number(String(p.amount).replace(",","."))||0}))
+      .filter(p=>p.amount>0);
+
+    const paid=payments.reduce((a,p)=>a+p.amount,0);
+    if(!payments.length){
+      error.textContent="Adicione pelo menos um pagamento.";
+      return;
+    }
+    if(Math.abs(Number((paid-total).toFixed(2)))>0.005){
+      error.textContent=`A soma dos pagamentos (${formatMoney(paid)}) deve ser igual ao total da venda (${formatMoney(total)}).`;
+      return;
+    }
+  } else {
+    payments=[{method:document.getElementById("salePayment").value,amount:Number(total.toFixed(2))}];
+  }
+
   const button = document.getElementById("confirmSale");
 
   button.disabled = true;
@@ -1301,7 +1417,7 @@ async function confirmSale(){
       {
         p_event_id: saleState.event.id,
         p_items: items,
-        p_payment_method: paymentMethod
+        p_payments: payments
       }
     );
 
@@ -1318,7 +1434,9 @@ async function confirmSale(){
     );
 
     saleState.cart = [];
+    saleState.splitPayments = [];
     renderSaleCart();
+    renderSplitPayments();
 
   } finally {
     button.disabled = false;
