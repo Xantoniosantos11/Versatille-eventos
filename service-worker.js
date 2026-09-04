@@ -1,9 +1,9 @@
-const CACHE = "versatille-pwa-v16";
+const CACHE = "versatille-pwa-v17";
 const ASSETS = [
   "./",
   "./index.html",
   "./style.css?v=8",
-  "./app.js?v=24",
+  "./app.js?v=25",
   "./config.js",
   "./manifest.json",
   "./icon.svg",
