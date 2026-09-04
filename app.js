@@ -1413,7 +1413,7 @@ async function confirmSale(){
      * pagamento, movimento e auditoria em uma única operação.
      */
     const { data, error: rpcError } = await supabaseClient.rpc(
-      "create_sale",
+      "create_sale_split",
       {
         p_event_id: saleState.event.id,
         p_items: items,
