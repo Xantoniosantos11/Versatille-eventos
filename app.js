@@ -1466,15 +1466,14 @@ async function loadOrganizationEventData(){
     .select("user_id,active")
     .eq("event_id", eventId);
 
-  const [eventR, salesR, stockR, movementsR, sellersR] =
-    await Promise.all([eventPromise,salesPromise,stockPromise,movementsPromise,sellersPromise]);
+  const sellerNamesPromise = supabaseClient.rpc("get_event_seller_names", {
+    p_event_id: eventId
+  });
 
-  const sellerIds = (sellersR.data || []).map(s => s.user_id).filter(Boolean);
-  const profilesR = sellerIds.length
-    ? await supabaseClient.from("profiles").select("id,full_name").in("id", sellerIds)
-    : { data: [], error: null };
+  const [eventR, salesR, stockR, movementsR, sellersR, sellerNamesR] =
+    await Promise.all([eventPromise,salesPromise,stockPromise,movementsPromise,sellersPromise,sellerNamesPromise]);
 
-  const firstError = [eventR,salesR,stockR,movementsR,sellersR,profilesR].find(r => r.error);
+  const firstError = [eventR,salesR,stockR,movementsR,sellersR,sellerNamesR].find(r => r.error);
   if(firstError){
     list.innerHTML =
       `<div class="card error">Não foi possível carregar o painel: ${escapeHtml(firstError.error.message)}</div>`;
@@ -1486,11 +1485,11 @@ async function loadOrganizationEventData(){
   const stock = stockR.data || [];
   const movements = movementsR.data || [];
   const sellers = sellersR.data || [];
-  const profiles = profilesR.data || [];
+  const sellerProfiles = sellerNamesR.data || [];
 
   const sellerNames = {};
-  profiles.forEach(p => {
-    sellerNames[p.id] = p.full_name || `Garçom ${String(p.id || "").slice(0,8)}`;
+  sellerProfiles.forEach(p => {
+    sellerNames[p.user_id] = p.full_name || `Garçom ${String(p.user_id || "").slice(0,8)}`;
   });
   sellers.forEach(s => {
     if (!sellerNames[s.user_id]) {
