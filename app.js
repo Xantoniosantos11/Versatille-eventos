@@ -2116,6 +2116,85 @@ async function setupDailyReport(eventId, targetId, sellerId=null, sellerMode=fal
   }
 }
 
+
+/* ===== PWA / INSTALAÇÃO ===== */
+(function setupPWA() {
+  let deferredInstallPrompt = null;
+  const installBtn = document.getElementById("installAppBtn");
+  const helpCard = document.getElementById("installHelpCard");
+  const helpText = document.getElementById("installHelpText");
+
+  function isStandalone() {
+    return window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true;
+  }
+
+  function showInstallHelp(message) {
+    if (!helpCard) return;
+    helpCard.classList.remove("hidden");
+    if (helpText && message) helpText.textContent = message;
+  }
+
+  function showInstallButton() {
+    if (installBtn && !isStandalone()) installBtn.classList.remove("hidden");
+  }
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", async () => {
+      try {
+        const registration = await navigator.serviceWorker.register(
+          "./service-worker.js?v=16",
+          { scope: "./" }
+        );
+        console.log("Versatille PWA: Service Worker registrado.", registration.scope);
+        if (registration.waiting) registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      } catch (err) {
+        console.error("Versatille PWA: falha ao registrar Service Worker:", err);
+      }
+    });
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    showInstallButton();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    if (installBtn) installBtn.classList.add("hidden");
+    if (helpCard) helpCard.classList.add("hidden");
+  });
+
+  if (installBtn) {
+    installBtn.addEventListener("click", async () => {
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        try {
+          await deferredInstallPrompt.userChoice;
+        } catch (_) {}
+        deferredInstallPrompt = null;
+        installBtn.classList.add("hidden");
+        return;
+      }
+
+      // Browser doesn't expose a prompt. Give the correct manual path instead
+      // of making the button appear broken.
+      const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (isiOS) {
+        showInstallHelp("No iPhone/iPad: toque em Compartilhar e depois em “Adicionar à Tela de Início”.");
+      } else {
+        showInstallHelp("No Android/Chrome: abra o menu ⋮ do navegador e toque em “Instalar aplicativo” ou “Adicionar à tela inicial”.");
+      }
+    });
+  }
+
+  if (isStandalone()) {
+    if (installBtn) installBtn.classList.add("hidden");
+    if (helpCard) helpCard.classList.add("hidden");
+  }
+})();
+
 init();
 
 

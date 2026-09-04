@@ -51,7 +51,7 @@
           <div class="brand small">VERSATILLE <span>EVENTOS</span></div>
           <div id="userInfo" class="muted"></div>
         </div>
-        <button id="logoutBtn" class="ghost">Sair</button>
+        <div style="display:flex;gap:8px;align-items:center"><button id="installAppBtn" class="ghost hidden" type="button">📲 Instalar</button><button id="logoutBtn" class="ghost">Sair</button></div>
       </header>
 
       <div class="content">
@@ -90,6 +90,15 @@
           </div>
         </div>
 
+
+        <div id="installHelpCard" class="card hidden" style="margin-top:12px">
+          <strong>📲 Instalar Versatille Eventos</strong>
+          <p id="installHelpText" class="muted" style="margin:6px 0 0">
+            Se o botão de instalação não aparecer, use o menu do navegador e escolha
+            “Instalar aplicativo” ou “Adicionar à tela inicial”.
+          </p>
+        </div>
+
         <div id="statusBox" class="card status-box">
           <span class="dot"></span>
           <span id="statusText">Conectando ao Supabase...</span>
@@ -100,6 +109,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=23"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>
