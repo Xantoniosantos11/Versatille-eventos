@@ -278,16 +278,32 @@ async function createEvent(e){
 
 async function updateEventStatus(id, status){
   const label = status === "FECHADO" ? "fechar" : "cancelar";
-  if(!confirm(`Tem certeza que deseja ${label} este evento?`)) return;
+  const message = status === "FECHADO"
+    ? "Tem certeza que deseja fechar este evento?\n\nDepois do fechamento, novas vendas e movimentações de estoque serão bloqueadas."
+    : "Tem certeza que deseja cancelar este evento?";
 
-  const update = {status};
-  if(status === "FECHADO") update.closed_at = new Date().toISOString();
+  if(!confirm(message)) return;
 
-  const {error} = await supabaseClient.from("events").update(update).eq("id", id);
-  if(error){
-    alert("Não foi possível atualizar o evento: " + error.message);
-    return;
+  // Fechamento usa a função protegida do banco.
+  // Isso garante que o evento só seja fechado de forma segura pelo ADM.
+  if(status === "FECHADO"){
+    const {error} = await supabaseClient.rpc("close_event", { p_event_id: id });
+    if(error){
+      alert("Não foi possível fechar o evento: " + error.message);
+      return;
+    }
+  } else {
+    const {error} = await supabaseClient
+      .from("events")
+      .update({ status: "CANCELADO" })
+      .eq("id", id);
+
+    if(error){
+      alert("Não foi possível cancelar o evento: " + error.message);
+      return;
+    }
   }
+
   await loadEvents();
 }
 
