@@ -213,6 +213,8 @@ const statusText = document.getElementById("statusText");
 const statusDot = document.querySelector(".dot");
 
 let supabaseClient = null;
+window.supabaseClient = null;
+window.currentProfileRole = null;
 
 function setStatus(text, ok=false){
   statusText.textContent = text;
@@ -244,6 +246,7 @@ async function init(){
   }
 
   supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+  window.supabaseClient = supabaseClient;
   setStatus("Conectado ao Supabase", true);
 
   const {data:{session}} = await supabaseClient.auth.getSession();
@@ -277,6 +280,7 @@ async function loadProfile(user){
 
   userInfo.textContent = profile.full_name || user.email;
   roleBadge.textContent = profile.role;
+  window.currentProfileRole = profile.role;
 
   if(profile.role === "ADM"){
     panelTitle.textContent = "Painel administrativo";
@@ -516,6 +520,41 @@ function escapeHtml(value){
   }[c]));
 }
 
+
+// ===== IMPRESSAO E AUDITORIA =====
+async function getSaleForPrint(saleId){
+  const {data,error}=await supabaseClient.from("sales").select("id,order_number,event_id,seller_id,total,status,created_at,sale_items(quantity,unit_price,products(name))").eq("id",saleId).single();
+  if(error) throw error;
+  const {data:name}=await supabaseClient.from("profiles").select("full_name").eq("id",data.seller_id).maybeSingle();
+  data.seller_name=name?.full_name||"Garçom";
+  return data;
+}
+async function printSaleOriginal(saleId){
+  if(window.currentProfileRole!=="VENDEDOR") return;
+  try{ await window.VersatillePrinter.printOrder(await getSaleForPrint(saleId),"ORIGINAL"); }
+  catch(err){ console.error(err); alert("A venda foi registrada, mas não foi possível preparar a impressão: "+(err.message||err)); }
+}
+async function reprintSaleAsAdmin(saleId){
+  if(window.currentProfileRole!=="ADM"){ alert("Somente ADM pode reimprimir pedidos."); return; }
+  const reason=prompt("Motivo da reimpressão:","Ficha perdida / danificada");
+  if(reason===null) return;
+  if(!reason.trim()) return alert("Informe o motivo da reimpressão.");
+  try{ await window.VersatillePrinter.printOrder(await getSaleForPrint(saleId),"REIMPRESSAO",reason.trim()); }
+  catch(err){ alert("Não foi possível reimprimir: "+(err.message||err)); }
+}
+async function renderPrintAudit(eventId){
+  const host=document.getElementById("printAuditArea");
+  if(!host) return;
+  try{
+    const {data,error}=await supabaseClient.from("print_events").select("id,sale_id,seller_id,requested_by,print_type,copy_number,status,reason,created_at,sales(order_number),seller:profiles!print_events_seller_id_fkey(full_name),requester:profiles!print_events_requested_by_fkey(full_name)").eq("event_id",eventId).order("created_at",{ascending:false}).limit(5000);
+    if(error) throw error;
+    const rows=data||[], originals=rows.filter(x=>x.print_type==="ORIGINAL"&&x.status==="SUCESSO"), reprints=rows.filter(x=>x.print_type==="REIMPRESSAO"&&x.status==="SUCESSO");
+    const grouped={}; reprints.forEach(x=>grouped[x.sale_id]=(grouped[x.sale_id]||0)+1);
+    const details=Object.entries(grouped).map(([saleId,count])=>{ const r=reprints.find(x=>x.sale_id===saleId); return `<div style="padding:8px 0;border-bottom:1px solid var(--line)"><strong>Pedido Nº ${escapeHtml(r?.sales?.order_number||saleId)}</strong><br><small class="muted">Garçom: ${escapeHtml(r?.seller?.full_name||"Garçom")} • ${count} reimpressão(ões)</small><br><small class="muted">Última: ${r?.created_at?new Date(r.created_at).toLocaleString("pt-BR"):""}</small> <button class="ghost small-btn" data-reprint-sale="${saleId}">🖨️ Reimprimir</button></div>`; }).join("")||'<div class="muted">Nenhuma reimpressão registrada.</div>';
+    host.innerHTML=`<div class="card"><div class="eyebrow">CONTROLE DE IMPRESSÕES</div><div class="grid"><div><strong>${originals.length}</strong><br><small>Impressões originais</small></div><div><strong>${reprints.length}</strong><br><small>Reimpressões</small></div></div><h4>Pedidos reimpressos</h4>${details}</div>`;
+    host.querySelectorAll("[data-reprint-sale]").forEach(b=>b.onclick=async()=>{await reprintSaleAsAdmin(b.dataset.reprintSale); await renderPrintAudit(eventId);});
+  }catch(err){ host.innerHTML=`<div class="card error">Não foi possível carregar a auditoria de impressão: ${escapeHtml(err.message||String(err))}</div>`; }
+}
 
 async function openProducts(){
   const content=document.querySelector(".content");
@@ -1619,7 +1658,7 @@ async function loadMySales(){
   const { data, error } = await supabaseClient
     .from("sales")
     .select(`
-      id,event_id,total,status,created_at,cancelled_at,
+      id,order_number,event_id,total,status,created_at,cancelled_at,
       events(name),
       sale_items(
         quantity,
@@ -1655,7 +1694,7 @@ async function loadMySales(){
       <article class="card">
         <div style="display:flex;justify-content:space-between;gap:12px">
           <div>
-            <div class="event-title">${escapeHtml(sale.events?.name || "Evento")}</div>
+            <div class="event-title">Pedido Nº ${escapeHtml(sale.order_number || sale.id)} • ${escapeHtml(sale.events?.name || "Evento")}</div>
             <div class="muted">${new Date(sale.created_at).toLocaleString("pt-BR")}</div>
           </div>
           <span class="status ${status === "CONFIRMADA" ? "aberto" : "cancelado"}">
@@ -1724,6 +1763,7 @@ async function openReports(){
     <div id="reportArea">
       <div class="card muted">Selecione um evento para gerar o relatório.</div>
     </div>
+    <div id="printAuditArea"></div>
   `;
 
   document.getElementById("backReports").onclick=()=>{
@@ -1931,6 +1971,7 @@ async function loadEventReport(){
     </div>
   `;
   printBtn.disabled=false;
+  await renderPrintAudit(eventId);
 }
 
 /* =========================================================
@@ -1978,6 +2019,7 @@ async function openOrganizationDashboard(){
       <button id="organizationRefresh" class="ghost" type="button">↻ Atualizar dados</button>
     </div>
 
+    <div id="organizationDailyControls"></div>
     <div id="organizationDashboardList" class="list">
       <div class="card muted">Carregando...</div>
     </div>
@@ -2222,6 +2264,7 @@ async function loadOrganizationEventData(){
       <span>Acesso de Organização: somente leitura. Este painel não possui ações de alteração, exclusão ou criação.</span>
     </div>
   `;
+  await setupDailyReport(eventId,"organizationDailyControls",null,false);
 }
 
 
@@ -2329,6 +2372,7 @@ async function setupDailyReport(eventId, targetId, sellerId=null, sellerMode=fal
     target.innerHTML=`
       <div class="card">
         <div class="eyebrow">CONSULTA POR DIA</div>
+        ${(!sellerMode && ["ADM","ORGANIZACAO"].includes(window.currentProfileRole)) ? `<button id="${targetId}PrintBtn" class="ghost small-btn" style="margin-bottom:10px">🖨️ Imprimir resumo do dia</button>` : ""}
         <label>Data
           <select id="${targetId}Date" class="select">
             ${days.map(d=>`<option value="${d}" ${d===today?"selected":""}>${dailyBRDate(d)}</option>`).join("")}
@@ -2352,6 +2396,7 @@ async function setupDailyReport(eventId, targetId, sellerId=null, sellerMode=fal
       }catch(err){out.innerHTML=`<div class="card error">${escapeHtml(err.message||String(err))}</div>`;}
     };
     sel.addEventListener("change",render);
+    document.getElementById(targetId+"PrintBtn")?.addEventListener("click",()=>window.print());
     await render();
   } catch(err) {
     target.innerHTML=`<div class="card error">${escapeHtml(err.message||String(err))}</div>`;
